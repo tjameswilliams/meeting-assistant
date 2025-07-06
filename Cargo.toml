@@ -1,0 +1,56 @@
+[package]
+name = "meeting-assistant-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Meeting Assistant CLI - Ultra-fast Rust implementation for meeting and collaboration support"
+license = "CC-BY-NC-4.0"
+
+[[bin]]
+name = "meeting-assistant"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.0", features = ["full"] }
+tokio-util = "0.7"
+reqwest = { version = "0.11", features = ["json", "stream", "multipart"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+crossterm = "0.27"
+console = "0.15"
+global-hotkey = "0.5"
+arboard = "3.3"  # Better clipboard support
+screenshots = "0.3"
+clap = { version = "4.0", features = ["derive"] }
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+indicatif = "0.17"
+pulldown-cmark = "0.9"
+syntect = "5.1"  # Syntax highlighting
+uuid = { version = "1.6", features = ["v4"] }
+dirs = "5.0"
+base64 = "0.21"
+futures = "0.3"
+tokio-stream = "0.1"
+bytes = "1.5"
+tempfile = "3.8"
+image = "0.24"
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1.10"
+rdev = "0.4"  # Alternative input handling
+colored = "2.0"
+ctrlc = "3.4"
+lazy_static = "1.4"
+parking_lot = "0.12"
+dotenv = "0.15"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+opt-level = 3
+
+[profile.dev]
+opt-level = 1 

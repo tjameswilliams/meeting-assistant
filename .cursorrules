@@ -1,0 +1,309 @@
+# Meeting Assistant CLI - Rust Edition - Cursor Rules
+
+## Project Overview
+
+This is a high-performance CLI application built in Rust that provides AI-powered interview assistance with real-time audio capture, code analysis, and multi-modal AI integration. The project emphasizes performance, safety, and maintainability.
+
+## Architecture & Design Principles
+
+### Core Architecture
+
+- **Async-first design** using Tokio runtime for all I/O operations
+- **Event-driven architecture** with channel-based communication
+- **Modular structure** with clear separation of concerns
+- **Resource-safe** with proper cleanup and graceful shutdown
+- **Type-safe** with comprehensive error handling
+
+### Module Organization
+
+- `main.rs` - Application entry point and event loop coordination
+- `types.rs` - Core data structures, enums, and type definitions
+- `config.rs` - Configuration management and environment loading
+- `ai.rs` - OpenAI API integration and response processing
+- `audio.rs` - Audio capture and buffering with FFmpeg
+- `input.rs` - Keyboard and clipboard handling
+- `ui.rs` - Terminal UI with markdown rendering and syntax highlighting
+- `system.rs` - System integration and external tool management
+
+## Code Style & Conventions
+
+### Naming Conventions
+
+- **Variables & Functions**: `snake_case` (e.g., `audio_capture`, `handle_keyboard_input`)
+- **Types & Enums**: `PascalCase` (e.g., `AudioConfig`, `AppEvent`)
+- **Constants**: `SCREAMING_SNAKE_CASE` (e.g., `DOUBLE_TAP_WINDOW_MS`)
+- **Modules**: `snake_case` (e.g., `audio.rs`, `system.rs`)
+- **Descriptive naming**: Use clear, descriptive names that explain purpose
+
+### Error Handling Patterns
+
+- **Always use `anyhow::Result<T>`** for functions that can fail
+- **Add context** to errors using `.context("Description")`
+- **Graceful degradation** when optional components fail
+- **Proper error propagation** with `?` operator
+- **User-friendly error messages** with actionable guidance
+
+```rust
+// Good error handling
+pub async fn load_config() -> Result<Config> {
+    let api_key = env::var("OPENAI_API_KEY")
+        .context("OPENAI_API_KEY environment variable not found")?;
+
+    std::fs::create_dir_all(&temp_dir)
+        .context("Failed to create temporary directory")?;
+
+    Ok(config)
+}
+```
+
+### Async Patterns
+
+- **Use `async fn` for I/O operations** (file, network, system calls)
+- **Prefer `Arc<RwLock<T>>`** for shared mutable state
+- **Use `mpsc` channels** for inter-component communication
+- **Implement graceful shutdown** with `CancellationToken`
+- **Spawn background tasks** with `tokio::spawn`
+
+```rust
+// Good async pattern
+let audio_capture = Arc::new(RwLock::new(AudioCapture::new(&config).await?));
+let cancellation_token = CancellationToken::new();
+
+tokio::spawn(async move {
+    tokio::select! {
+        _ = cancellation_token.cancelled() => {
+            println!("Task cancelled gracefully");
+        }
+        result = background_work() => {
+            // Handle result
+        }
+    }
+});
+```
+
+### Type Safety & Data Structures
+
+- **Derive common traits**: `#[derive(Debug, Clone, Serialize, Deserialize)]`
+- **Use enums for state** instead of string constants
+- **Implement `Display` trait** for user-facing enums
+- **Strong typing** over primitive types where meaningful
+- **Use `Option<T>` and `Result<T, E>`** appropriately
+
+```rust
+// Good type definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum QuestionType {
+    Audio,
+    Code,
+    Combined,
+    Screenshot,
+}
+
+impl fmt::Display for QuestionType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            QuestionType::Audio => write!(f, "audio"),
+            QuestionType::Code => write!(f, "code_analysis"),
+            // ... other variants
+        }
+    }
+}
+```
+
+## Performance Guidelines
+
+### Memory Management
+
+- **Use `Arc<T>` for shared ownership** of immutable data
+- **Use `Arc<RwLock<T>>`** for shared mutable state
+- **Prefer `&str` over `String`** for function parameters when possible
+- **Use `Vec::with_capacity()`** when size is known
+- **Clone judiciously** - understand the cost of each clone
+
+### String Handling
+
+- **Use `&str` for readonly operations**
+- **Use `String::from()` or `.to_string()` for owned strings**
+- **Prefer `format!()` over string concatenation**
+- **Use `Cow<str>` for conditional ownership**
+
+### Async Performance
+
+- **Avoid blocking operations** in async functions
+- **Use `tokio::task::spawn_blocking`** for CPU-intensive work
+- **Batch operations** where possible
+- **Stream responses** for better user experience
+
+## Dependencies & External Integration
+
+### Dependency Management
+
+- **Prefer well-maintained crates** with good documentation
+- **Use specific versions** in Cargo.toml
+- **Enable only needed features** to reduce compilation time
+- **Document why each dependency is needed**
+
+### External Tool Integration
+
+- **Check tool availability** before using
+- **Provide helpful error messages** when tools are missing
+- **Implement fallback mechanisms** where appropriate
+- **Clean up temporary files** after use
+
+## Testing & Quality
+
+### Error Scenarios
+
+- **Test network failures** and API rate limits
+- **Test file system permissions** and disk space
+- **Test resource cleanup** on cancellation
+- **Test concurrent access** to shared resources
+
+### Code Quality
+
+- **Run `cargo clippy`** and fix all warnings
+- **Use `cargo fmt`** for consistent formatting
+- **Document public APIs** with doc comments
+- **Write meaningful commit messages**
+
+## UI/UX Guidelines
+
+### Terminal Output
+
+- **Use colored output** for better readability
+- **Provide clear status messages** for long operations
+- **Show progress indicators** where appropriate
+- **Use emojis consistently** for visual cues
+- **Format code blocks** with syntax highlighting
+
+### User Interaction
+
+- **Provide immediate feedback** for user actions
+- **Show helpful error messages** with solutions
+- **Implement graceful cancellation** for long operations
+- **Display session history** for context
+
+## Configuration & Environment
+
+### Configuration Management
+
+- **Use `.env` files** for local development
+- **Provide sensible defaults** for all settings
+- **Validate configuration** at startup
+- **Document all environment variables**
+
+### Environment Variables
+
+```bash
+# Required
+OPENAI_API_KEY=your_api_key_here
+
+# Optional with defaults
+OPENAI_MODEL=gpt-4o-mini
+OPENAI_MAX_TOKENS=1800
+AUDIO_DEVICE=:0
+BUFFER_DURATION=8
+CAPTURE_DURATION=15
+```
+
+## Security Considerations
+
+### API Keys & Secrets
+
+- **Never commit API keys** to version control
+- **Use environment variables** for sensitive data
+- **Validate API responses** before processing
+- **Implement rate limiting** for API calls
+
+### File System Access
+
+- **Validate file paths** before access
+- **Use temporary directories** for ephemeral files
+- **Clean up resources** properly
+- **Check permissions** before file operations
+
+## Development Workflow
+
+### Code Organization
+
+- **One concern per module** - keep modules focused
+- **Public API first** - design interfaces before implementation
+- **Documentation alongside code** - update docs with changes
+- **Consistent error handling** across all modules
+
+### Git Workflow
+
+- **Meaningful commit messages** with context
+- **Small, focused commits** that build/test cleanly
+- **Update PROJECT_SUMMARY.md** for major changes
+- **Tag releases** with semantic versioning
+
+## Performance Targets
+
+### Startup Performance
+
+- **< 200ms startup time** for the application
+- **< 1s for first API response** with cached config
+- **Minimal memory footprint** at idle
+
+### Runtime Performance
+
+- **< 50ms latency** for keyboard event handling
+- **Streaming responses** for AI interactions
+- **Efficient audio buffering** with minimal CPU usage
+
+## Common Patterns to Follow
+
+### Result Handling
+
+```rust
+// Good: Chain operations with context
+let result = operation_one()
+    .context("Failed at step one")?
+    .process()
+    .context("Failed during processing")?;
+```
+
+### Async Resource Management
+
+```rust
+// Good: Proper cleanup with RAII
+{
+    let _guard = resource.lock().await;
+    // Work with resource
+} // Lock automatically dropped
+```
+
+### Configuration Pattern
+
+```rust
+// Good: Builder pattern for complex config
+let config = Config::builder()
+    .audio_device(device)
+    .buffer_duration(duration)
+    .build()
+    .context("Failed to build config")?;
+```
+
+## Anti-Patterns to Avoid
+
+### Don't Do This
+
+- **Unwrapping without reason** - use `?` or handle errors properly
+- **Blocking in async context** - use async alternatives
+- **String cloning unnecessarily** - use references where possible
+- **Ignoring compilation warnings** - fix all clippy warnings
+- **Hardcoding values** - use configuration or constants
+
+### Error Handling Anti-Patterns
+
+```rust
+// Bad: Unwrapping without context
+let value = risky_operation().unwrap();
+
+// Good: Proper error handling
+let value = risky_operation()
+    .context("Failed to perform risky operation")?;
+```
+
+Remember: This codebase prioritizes performance, safety, and maintainability. When in doubt, prefer explicit error handling, clear naming, and modular design over clever optimizations that reduce readability.
