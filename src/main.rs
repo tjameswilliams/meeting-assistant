@@ -30,15 +30,22 @@ mod system;
 mod config;
 mod types;
 mod setup;
+mod plugin_system;
+mod plugins;
+
+use std::path::PathBuf;
+use futures::StreamExt;
 
 use audio::AudioCapture;
 use ai::OpenAIClient;
 use input::{KeyboardHandler, ClipboardHandler};
 use ui::TerminalUI;
 use system::SystemInfo;
-use config::Config;
+use config::{Config, LLMProvider};
 use types::*;
 use setup::run_setup;
+use plugin_system::*;
+use plugins::{OllamaProvider, SentimentAnalyzerPlugin};
 
 /// Meeting Assistant CLI - AI-powered meeting support with real-time audio capture
 #[derive(Parser)]
@@ -88,6 +95,69 @@ enum Commands {
     
     /// Run the main meeting assistant (default)
     Run,
+    
+    /// Plugin management commands
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum PluginCommand {
+    /// Install a plugin from a source
+    Install {
+        /// Plugin source (github:owner/repo, local:path, http:url, git:url)
+        source: String,
+        /// Optional branch for git sources
+        #[arg(long)]
+        branch: Option<String>,
+    },
+    
+    /// List installed plugins
+    List,
+    
+    /// Search for plugins in the registry
+    Search {
+        /// Search query
+        query: String,
+    },
+    
+    /// Show plugin information
+    Info {
+        /// Plugin name
+        name: String,
+    },
+    
+    /// Enable a plugin
+    Enable {
+        /// Plugin name
+        name: String,
+    },
+    
+    /// Disable a plugin
+    Disable {
+        /// Plugin name
+        name: String,
+    },
+    
+    /// Uninstall a plugin
+    Uninstall {
+        /// Plugin name
+        name: String,
+    },
+    
+    /// Update a plugin
+    Update {
+        /// Plugin name
+        name: String,
+    },
+    
+    /// Set active LLM provider
+    SetLlm {
+        /// Provider name
+        provider: String,
+    },
 }
 
 // Global channel for keyboard events
@@ -140,6 +210,9 @@ pub struct MeetingAssistant {
     terminal_ui: Arc<TerminalUI>,
     system_info: Arc<SystemInfo>,
     
+    // Plugin system
+    plugin_manager: Arc<PluginManager>,
+    
     // State management
     is_processing: Arc<RwLock<bool>>,
     should_cancel: Arc<RwLock<bool>>,
@@ -156,6 +229,40 @@ pub struct MeetingAssistant {
 }
 
 impl MeetingAssistant {
+    async fn register_builtin_plugins(plugin_manager: &mut PluginManager, config: &Config) -> Result<()> {
+        // Register Ollama provider
+        if let Some(ollama_config) = config.llm_provider.provider_configs.get("ollama") {
+            let ollama_config = serde_json::from_value::<crate::plugins::ollama_provider::OllamaConfig>(ollama_config.clone())
+                .unwrap_or_default();
+            let ollama_provider = OllamaProvider::new(ollama_config);
+            plugin_manager.register_llm_provider("ollama".to_string(), Box::new(ollama_provider)).await?;
+        }
+        
+        // Register sentiment analyzer
+        let sentiment_plugin = SentimentAnalyzerPlugin::new();
+        plugin_manager.register_plugin("sentiment_analyzer".to_string(), Box::new(sentiment_plugin)).await?;
+        
+        // Set active LLM provider based on configuration
+        match &config.llm_provider.active_provider {
+            LLMProvider::Ollama => {
+                plugin_manager.set_active_llm_provider("ollama".to_string()).await?;
+                println!("🦙 Using Ollama as LLM provider");
+            }
+            LLMProvider::OpenAI => {
+                println!("🤖 Using OpenAI as LLM provider");
+            }
+            LLMProvider::Custom(name) => {
+                if plugin_manager.set_active_llm_provider(name.clone()).await.is_ok() {
+                    println!("🔌 Using {} as LLM provider", name);
+                } else {
+                    println!("⚠️  Custom LLM provider '{}' not found, falling back to OpenAI", name);
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
     pub async fn new() -> Result<(Self, mpsc::UnboundedReceiver<AppEvent>)> {
         // Load configuration
         let config = Config::load().await?;
@@ -166,6 +273,19 @@ impl MeetingAssistant {
         let clipboard_handler = Arc::new(RwLock::new(ClipboardHandler::new()));
         let terminal_ui = Arc::new(TerminalUI::new());
         let system_info = Arc::new(SystemInfo::new().await?);
+        
+        // Initialize plugin manager
+        let temp_dir = dirs::home_dir()
+            .context("Failed to get home directory")?
+            .join(".meeting-assistant")
+            .join("temp");
+        std::fs::create_dir_all(&temp_dir)?;
+        let mut plugin_manager = PluginManager::new(config.clone(), temp_dir)?;
+        
+        // Register built-in plugins
+        Self::register_builtin_plugins(&mut plugin_manager, &config).await?;
+        
+        let plugin_manager = Arc::new(plugin_manager);
         
         // Create event channel
         let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -186,6 +306,7 @@ impl MeetingAssistant {
             clipboard_handler,
             terminal_ui,
             system_info,
+            plugin_manager,
             is_processing: Arc::new(RwLock::new(false)),
             should_cancel: Arc::new(RwLock::new(false)),
             session_history: Arc::new(RwLock::new(Vec::new())),
@@ -202,6 +323,9 @@ impl MeetingAssistant {
     pub async fn run(&self, event_rx: mpsc::UnboundedReceiver<AppEvent>) -> Result<()> {
         // Setup terminal
         self.terminal_ui.print_welcome().await?;
+        
+        // Initialize plugins
+        self.plugin_manager.initialize_plugins().await?;
         
         // Check system status (re-enabled)
         // Note: SystemInfo.check_system_status needs &mut self but we have &self
@@ -536,10 +660,13 @@ impl MeetingAssistant {
                 self.terminal_ui.print_transcript(&transcript).await?;
                 
                 tracing::info!("handle_audio_capture_internal: Generating AI response");
-                let response = self.openai_client.generate_meeting_support(
-                    &transcript,
-                    &self.build_conversation_context().await,
-                ).await?;
+                let context = self.build_conversation_context().await;
+                let prompt = if context.is_empty() {
+                    transcript.clone()
+                } else {
+                    format!("{}\n\nContext: {}", transcript, context)
+                };
+                let response = self.generate_streaming_ai_response(&prompt, None).await?;
                 
                 tracing::info!("handle_audio_capture_internal: Streaming AI response");
                 self.terminal_ui.stream_response(&response).await?;
@@ -611,11 +738,12 @@ impl MeetingAssistant {
             
             let _code_id = self.store_code_in_memory(&content, &analysis).await?;
             
-            let response = self.openai_client.generate_code_analysis(
-                &content,
-                &analysis,
-                &self.build_code_context().await,
-            ).await?;
+            let code_context = self.build_code_context().await;
+            let prompt = format!(
+                "Code to analyze:\n```{}\n{}\n```\n\n{}",
+                analysis.language, content, code_context
+            );
+            let response = self.generate_streaming_ai_response(&prompt, Some("You are an expert code analyst. Provide detailed analysis of the code.")).await?;
             
             self.terminal_ui.stream_response(&response).await?;
             
@@ -729,12 +857,12 @@ impl MeetingAssistant {
                     
                     let _code_id = self.store_code_in_memory(&content, &analysis).await?;
                     
-                    let response = self.openai_client.generate_code_with_audio_analysis(
-                        &transcript,
-                        &content,
-                        &analysis,
-                        &self.build_code_context().await,
-                    ).await?;
+                    let code_context = self.build_code_context().await;
+                    let prompt = format!(
+                        "Audio context: {}\n\nCode to analyze:\n```{}\n{}\n```\n\n{}",
+                        transcript, analysis.language, content, code_context
+                    );
+                    let response = self.generate_streaming_ai_response(&prompt, Some("You are an expert code analyst. Analyze the provided code in the context of the audio discussion.")).await?;
                     
                     self.terminal_ui.stream_response(&response).await?;
                     
@@ -942,6 +1070,8 @@ impl MeetingAssistant {
             
             self.terminal_ui.print_status("📸 Screenshot captured from active window").await?;
             
+            // Note: Screenshot analysis still uses OpenAI client as it requires vision capabilities
+            // TODO: Extend plugin system to support vision models like GPT-4V, Claude Vision, etc.
             let response = self.openai_client.generate_screenshot_with_audio_analysis(
                 &audio_context,
                 &screenshot,
@@ -962,6 +1092,8 @@ impl MeetingAssistant {
             
             self.terminal_ui.print_status("📸 Screenshot captured from active window").await?;
             
+            // Note: Screenshot analysis still uses OpenAI client as it requires vision capabilities
+            // TODO: Extend plugin system to support vision models like GPT-4V, Claude Vision, etc.
             let response = self.openai_client.generate_screenshot_with_audio_analysis(
                 &audio_context,
                 &screenshot,
@@ -1146,6 +1278,75 @@ impl MeetingAssistant {
         Ok(())
     }
     
+    /// Generate AI response using the active LLM provider (plugin system or OpenAI fallback)
+    async fn generate_ai_response(&self, prompt: &str, system_prompt: Option<&str>) -> Result<String> {
+        let options = LLMOptions {
+            max_tokens: Some(self.config.openai.max_tokens),
+            temperature: Some(self.config.openai.temperature),
+            model: Some(self.config.openai.model.clone()),
+            system_prompt: system_prompt.map(|s| s.to_string()),
+            streaming: false,
+        };
+
+        // Try plugin system first
+        if let Ok(Some(response)) = self.plugin_manager.generate_completion(prompt, &options).await {
+            return Ok(response);
+        }
+
+        // Fallback to OpenAI if enabled and no plugin is active or plugin failed
+        if self.config.llm_provider.fallback_to_openai {
+            tracing::info!("Using OpenAI fallback for LLM generation");
+            return self.openai_client.generate_meeting_support(prompt, "").await;
+        }
+
+        Err(anyhow::anyhow!("No LLM provider available"))
+    }
+
+    /// Generate streaming AI response using the active LLM provider
+    async fn generate_streaming_ai_response(&self, prompt: &str, system_prompt: Option<&str>) -> Result<String> {
+        let options = LLMOptions {
+            max_tokens: Some(self.config.openai.max_tokens),
+            temperature: Some(self.config.openai.temperature),
+            model: Some(self.config.openai.model.clone()),
+            system_prompt: system_prompt.map(|s| s.to_string()),
+            streaming: true,
+        };
+
+        // Try plugin system first
+        if let Ok(Some(mut stream)) = self.plugin_manager.generate_streaming_completion(prompt, &options).await {
+            let mut full_response = String::new();
+            
+            while let Some(chunk_result) = stream.next().await {
+                match chunk_result {
+                    Ok(chunk) => {
+                        if !chunk.is_empty() {
+                            print!("{}", chunk);
+                            use std::io::Write;
+                            std::io::stdout().flush().ok();
+                            full_response.push_str(&chunk);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Stream chunk error: {}", e);
+                        break;
+                    }
+                }
+            }
+            
+            if !full_response.is_empty() {
+                return Ok(full_response);
+            }
+        }
+
+        // Fallback to OpenAI if enabled
+        if self.config.llm_provider.fallback_to_openai {
+            tracing::info!("Using OpenAI fallback for streaming LLM generation");
+            return self.openai_client.generate_meeting_support(prompt, "").await;
+        }
+
+        Err(anyhow::anyhow!("No LLM provider available"))
+    }
+    
     async fn update_conversation_summary(&self) -> Result<()> {
         let context = self.conversation_context.read().await;
         
@@ -1198,6 +1399,11 @@ async fn main() -> Result<()> {
         Some(Commands::Run) | None => {
             // Run the main application (default)
             run_main_application().await?;
+        }
+        
+        Some(Commands::Plugin { command }) => {
+            // Handle plugin commands
+            handle_plugin_command(command).await?;
         }
     }
     
@@ -1367,4 +1573,142 @@ async fn setup_logging() -> Result<()> {
     println!();
     
     Ok(())
+}
+
+async fn handle_plugin_command(command: PluginCommand) -> Result<()> {
+    // Initialize plugin manager for commands
+    let config = Config::load().await?;
+    let temp_dir = dirs::home_dir()
+        .context("Failed to get home directory")?
+        .join(".meeting-assistant")
+        .join("temp");
+    std::fs::create_dir_all(&temp_dir)?;
+    let plugin_manager = PluginManager::new(config, temp_dir)?;
+    let registry = PluginRegistry::new()?;
+    
+    match command {
+        PluginCommand::Install { source, branch } => {
+            println!("🔧 Installing plugin from: {}", source);
+            
+            let plugin_source = parse_plugin_source(&source, branch)?;
+            let plugin_id = plugin_manager.install_plugin(plugin_source).await?;
+            
+            println!("✅ Successfully installed plugin: {}", plugin_id);
+        }
+        
+        PluginCommand::List => {
+            println!("📋 Installed plugins:");
+            let plugins = plugin_manager.list_plugins().await;
+            
+            if plugins.is_empty() {
+                println!("No plugins installed.");
+            } else {
+                for (_, info) in plugins {
+                    let status = if info.enabled { "✅" } else { "❌" };
+                    println!("  {} {} v{} - {} ({})", 
+                        status, info.name, info.version, info.description, info.author);
+                }
+            }
+        }
+        
+        PluginCommand::Search { query } => {
+            println!("🔍 Searching for plugins: {}", query);
+            let results = registry.search_plugins(&query).await?;
+            
+            if results.is_empty() {
+                println!("No plugins found matching: {}", query);
+            } else {
+                for plugin in results {
+                    println!("  {} v{} - {} ({})", 
+                        plugin.name, plugin.version, plugin.description, plugin.author);
+                }
+            }
+        }
+        
+        PluginCommand::Info { name } => {
+            if let Some(info) = registry.get_plugin_info(&name).await? {
+                println!("📦 Plugin: {}", info.name);
+                println!("Version: {}", info.version);
+                println!("Description: {}", info.description);
+                println!("Author: {}", info.author);
+                println!("Type: {:?}", info.plugin_type);
+                println!("Enabled: {}", info.enabled);
+            } else {
+                println!("Plugin '{}' not found", name);
+            }
+        }
+        
+        PluginCommand::Enable { name } => {
+            println!("✅ Enabling plugin: {}", name);
+            // TODO: Implement plugin enable/disable
+            println!("Plugin management not yet implemented");
+        }
+        
+        PluginCommand::Disable { name } => {
+            println!("❌ Disabling plugin: {}", name);
+            // TODO: Implement plugin enable/disable
+            println!("Plugin management not yet implemented");
+        }
+        
+        PluginCommand::Uninstall { name } => {
+            println!("🗑️  Uninstalling plugin: {}", name);
+            // TODO: Implement plugin uninstall
+            println!("Plugin management not yet implemented");
+        }
+        
+        PluginCommand::Update { name } => {
+            println!("🔄 Updating plugin: {}", name);
+            // TODO: Implement plugin update
+            println!("Plugin management not yet implemented");
+        }
+        
+        PluginCommand::SetLlm { provider } => {
+            println!("🤖 Setting LLM provider to: {}", provider);
+            plugin_manager.set_active_llm_provider(provider).await?;
+            println!("✅ LLM provider set successfully");
+        }
+    }
+    
+    Ok(())
+}
+
+fn parse_plugin_source(source: &str, branch: Option<String>) -> Result<PluginSource> {
+    if source.starts_with("github:") {
+        let repo_path = source.strip_prefix("github:").unwrap();
+        let parts: Vec<&str> = repo_path.split('/').collect();
+        if parts.len() != 2 {
+            return Err(anyhow::anyhow!("Invalid GitHub format. Use: github:owner/repo"));
+        }
+        Ok(PluginSource::GitHub {
+            owner: parts[0].to_string(),
+            repo: parts[1].to_string(),
+            branch,
+        })
+    } else if source.starts_with("local:") {
+        let path = source.strip_prefix("local:").unwrap();
+        Ok(PluginSource::Local {
+            path: PathBuf::from(path),
+        })
+    } else if source.starts_with("http://") || source.starts_with("https://") {
+        Ok(PluginSource::Http {
+            url: source.to_string(),
+        })
+    } else if source.starts_with("git:") {
+        let url = source.strip_prefix("git:").unwrap();
+        Ok(PluginSource::Git {
+            url: url.to_string(),
+            branch,
+        })
+    } else {
+        // Default to GitHub if no prefix
+        let parts: Vec<&str> = source.split('/').collect();
+        if parts.len() != 2 {
+            return Err(anyhow::anyhow!("Invalid format. Use: owner/repo or github:owner/repo"));
+        }
+        Ok(PluginSource::GitHub {
+            owner: parts[0].to_string(),
+            repo: parts[1].to_string(),
+            branch,
+        })
+    }
 } 

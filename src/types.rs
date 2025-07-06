@@ -27,7 +27,7 @@ pub enum AppEvent {
     Shutdown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum QuestionType {
     Audio,
     Code,
@@ -54,7 +54,7 @@ impl fmt::Display for QuestionType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionEntry {
     pub timestamp: DateTime<Utc>,
     pub input: String,
@@ -64,7 +64,7 @@ pub struct SessionEntry {
     pub key_topics: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConversationEntry {
     pub timestamp: DateTime<Utc>,
     pub question: String,
@@ -73,7 +73,7 @@ pub struct ConversationEntry {
     pub response: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CodeEntry {
     pub id: usize,
     pub timestamp: DateTime<Utc>,
@@ -84,7 +84,7 @@ pub struct CodeEntry {
     pub preview: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContentAnalysis {
     pub content_type: String,
     pub language: String,

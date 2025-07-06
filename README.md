@@ -38,6 +38,8 @@ cargo build --release
 - **🌊 Real-time Streaming** - Live OpenAI response streaming with markdown formatting
 - **🎨 Syntax Highlighting** - Beautiful code highlighting for 20+ programming languages
 - **⚡ Native Performance** - 10x faster startup, 50x less memory usage than Node.js alternatives
+- **🦙 Local LLM Support** - Built-in Ollama integration for private, offline AI inference
+- **🔌 Plugin System** - Extensible architecture for custom LLM providers and functionality
 
 ## Global Hotkeys 🔥
 
@@ -110,13 +112,24 @@ cargo build --release
 ### Environment Variables
 
 ```bash
-# Required
+# Required (if using OpenAI)
 OPENAI_API_KEY=your_openai_api_key_here
 
-# Optional - OpenAI Settings
+# LLM Provider Configuration
+LLM_PROVIDER=openai             # openai, ollama, or custom provider name
+LLM_FALLBACK_TO_OPENAI=true     # fallback if plugin provider fails
+
+# Optional - OpenAI Settings (when using OpenAI provider)
 OPENAI_MODEL=gpt-4o-mini        # or gpt-4o, gpt-4-turbo
 OPENAI_MAX_TOKENS=1800          # Max response length
 OPENAI_TEMPERATURE=0.5          # Response creativity (0.0-1.0)
+
+# Optional - Ollama Settings (when using Ollama provider)
+OLLAMA_BASE_URL=http://localhost:11434  # Ollama service URL
+OLLAMA_MODEL=llama2:7b                  # Default model to use
+OLLAMA_TIMEOUT=30                       # Request timeout in seconds
+OLLAMA_MAX_RETRIES=3                    # Maximum retry attempts
+OLLAMA_AUTO_PULL=false                  # Auto-pull missing models
 
 # Optional - Audio Settings
 AUDIO_DEVICE=":0"               # macOS audio device
@@ -141,6 +154,81 @@ ffmpeg -f avfoundation -list_devices true -i ""
 # ":0" - Default microphone
 # ":1" - Built-in microphone
 # ":2" - External microphone
+```
+
+### LLM Provider Configuration
+
+The Meeting Assistant supports multiple LLM providers through its plugin system:
+
+#### Using OpenAI (Default)
+
+```bash
+# Set provider to OpenAI (default)
+LLM_PROVIDER=openai
+OPENAI_API_KEY=your_openai_api_key_here
+OPENAI_MODEL=gpt-4o-mini
+```
+
+#### Using Ollama (Local LLM)
+
+```bash
+# Set provider to Ollama for local, private inference
+LLM_PROVIDER=ollama
+
+# Ollama configuration
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama2:7b
+OLLAMA_AUTO_PULL=false
+
+# Optional: Keep OpenAI as fallback
+LLM_FALLBACK_TO_OPENAI=true
+OPENAI_API_KEY=your_openai_api_key_here
+```
+
+**Setting up Ollama:**
+
+1. **Install Ollama:**
+
+   ```bash
+   # macOS
+   brew install ollama
+
+   # Or download from https://ollama.ai
+   ```
+
+2. **Start Ollama service:**
+
+   ```bash
+   ollama serve
+   ```
+
+3. **Pull a model:**
+
+   ```bash
+   # Recommended models for meeting assistance
+   ollama pull llama2:7b         # Good balance of speed/quality
+   ollama pull codellama:7b      # Better for code analysis
+   ollama pull mistral:7b        # Fast and efficient
+   ollama pull neural-chat:7b    # Optimized for conversations
+   ```
+
+4. **Test Ollama:**
+   ```bash
+   ollama run llama2:7b "Hello, how are you?"
+   ```
+
+#### Plugin Commands
+
+```bash
+# List available plugins
+./target/release/meeting-assistant plugin list
+
+# Set active LLM provider
+./target/release/meeting-assistant plugin set-llm ollama
+./target/release/meeting-assistant plugin set-llm openai
+
+# Show plugin status
+./target/release/meeting-assistant plugin info ollama
 ```
 
 ## Usage Examples 📝
@@ -286,14 +374,18 @@ cargo doc --open
 
 - [ ] Windows support
 - [ ] Linux support
-- [ ] Plugin system for custom AI providers
-- [ ] Local LLM support (Ollama integration)
+- [x] **Plugin system for custom AI providers** ✅
+- [x] **Local LLM support (Ollama integration)** ✅
 - [ ] Speech synthesis for responses
 - [ ] Meeting notes export
 - [ ] Performance analytics dashboard
 - [ ] Custom hotkey configuration
 - [ ] Multi-language support
 - [ ] Teams/Slack integration
+- [ ] Vision model support for screenshots (GPT-4V, Claude Vision)
+- [ ] Plugin marketplace and registry
+- [ ] Audio enhancement plugins
+- [ ] Export integrations (Notion, Obsidian, etc.)
 
 ## Contributing 🤝
 

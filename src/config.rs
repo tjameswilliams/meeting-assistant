@@ -14,13 +14,56 @@
 use anyhow::{Result, Context};
 use std::env;
 use std::path::PathBuf;
+use std::collections::HashMap;
 use dirs::home_dir;
+use serde::{Deserialize, Serialize};
 use crate::types::{AudioConfig, OpenAIConfig};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LLMProvider {
+    OpenAI,
+    Ollama,
+    Custom(String),
+}
+
+impl Default for LLMProvider {
+    fn default() -> Self {
+        LLMProvider::OpenAI
+    }
+}
+
+impl std::fmt::Display for LLMProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LLMProvider::OpenAI => write!(f, "openai"),
+            LLMProvider::Ollama => write!(f, "ollama"),
+            LLMProvider::Custom(name) => write!(f, "{}", name),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LLMProviderConfig {
+    pub active_provider: LLMProvider,
+    pub fallback_to_openai: bool,
+    pub provider_configs: HashMap<String, serde_json::Value>,
+}
+
+impl Default for LLMProviderConfig {
+    fn default() -> Self {
+        Self {
+            active_provider: LLMProvider::OpenAI,
+            fallback_to_openai: true,
+            provider_configs: HashMap::new(),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Config {
     pub audio: AudioConfig,
     pub openai: OpenAIConfig,
+    pub llm_provider: LLMProviderConfig,
     pub temp_dir: PathBuf,
     pub double_tap_window_ms: u64,
     pub debounce_ms: u64,
@@ -118,9 +161,50 @@ impl Config {
         std::fs::create_dir_all(&temp_dir)
             .context("Failed to create temporary directory")?;
         
+        // LLM Provider configuration
+        let active_provider = env::var("LLM_PROVIDER")
+            .unwrap_or_else(|_| "openai".to_string())
+            .to_lowercase();
+        
+        let active_provider = match active_provider.as_str() {
+            "openai" => LLMProvider::OpenAI,
+            "ollama" => LLMProvider::Ollama,
+            custom => LLMProvider::Custom(custom.to_string()),
+        };
+        
+        let fallback_to_openai = env::var("LLM_FALLBACK_TO_OPENAI")
+            .unwrap_or_else(|_| "true".to_string())
+            .parse::<bool>()
+            .unwrap_or(true);
+        
+        // Ollama configuration
+        let mut provider_configs = HashMap::new();
+        let ollama_config = serde_json::json!({
+            "base_url": env::var("OLLAMA_BASE_URL").unwrap_or_else(|_| "http://localhost:11434".to_string()),
+            "default_model": env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama2:7b".to_string()),
+            "timeout_seconds": env::var("OLLAMA_TIMEOUT").unwrap_or_else(|_| "30".to_string()).parse::<u64>().unwrap_or(30),
+            "max_retries": env::var("OLLAMA_MAX_RETRIES").unwrap_or_else(|_| "3".to_string()).parse::<u32>().unwrap_or(3),
+            "enabled": true,
+            "auto_pull_models": env::var("OLLAMA_AUTO_PULL").unwrap_or_else(|_| "false".to_string()).parse::<bool>().unwrap_or(false),
+            "preferred_models": [
+                "llama2:7b",
+                "codellama:7b", 
+                "mistral:7b",
+                "neural-chat:7b"
+            ]
+        });
+        provider_configs.insert("ollama".to_string(), ollama_config);
+        
+        let llm_provider = LLMProviderConfig {
+            active_provider,
+            fallback_to_openai,
+            provider_configs,
+        };
+        
         Ok(Config {
             audio,
             openai,
+            llm_provider,
             temp_dir,
             double_tap_window_ms,
             debounce_ms,

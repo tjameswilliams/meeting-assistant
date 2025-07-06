@@ -21,6 +21,23 @@ echo "🤝 Meeting Assistant CLI - Rust Edition Setup"
 echo "============================================="
 echo -e "${NC}"
 
+# Check if we should use the Rust-based setup
+if [[ "$1" == "--interactive" ]] || [[ "$1" == "-i" ]]; then
+    echo -e "${BLUE}Starting interactive Rust-based setup...${NC}"
+    # Build setup utility if not already built
+    if [[ ! -f "target/release/meeting-assistant" ]]; then
+        echo -e "${YELLOW}Building setup utility...${NC}"
+        cargo build --release
+    fi
+    
+    # Run interactive setup
+    ./target/release/meeting-assistant setup
+    exit 0
+fi
+
+echo -e "${YELLOW}Running automated setup. Use --interactive for full setup experience.${NC}"
+echo
+
 # Function to print colored output
 print_status() {
     echo -e "${GREEN}✅ $1${NC}"
@@ -498,6 +515,137 @@ EOF
     fi
 }
 
+# Function to setup plugin system
+setup_plugin_system() {
+    print_step "Setting up plugin system..."
+    
+    echo -e "${CYAN}Plugin System Configuration:${NC}"
+    echo "The Meeting Assistant now supports multiple LLM providers:"
+    echo "1. OpenAI (default) - Cloud-based, high quality"
+    echo "2. Ollama - Local, private, offline"
+    echo "3. Custom plugins - Extensible provider system"
+    echo
+    
+    # Check if Ollama is available
+    if command_exists ollama; then
+        print_status "Ollama is available for local AI inference"
+        
+        # Ask user about LLM provider preference
+        echo -e "${YELLOW}LLM Provider Selection:${NC}"
+        echo "Choose your preferred LLM provider:"
+        echo "1. OpenAI (requires API key)"
+        echo "2. Ollama (local, private)"
+        echo "3. Both (OpenAI with Ollama fallback)"
+        echo
+        
+        local choice=""
+        safe_read "Enter your choice (1-3): " choice "1"
+        
+        case "$choice" in
+            "2")
+                setup_ollama_provider
+                ;;
+            "3")
+                setup_dual_providers
+                ;;
+            *)
+                print_info "Using OpenAI as primary provider"
+                ;;
+        esac
+    else
+        print_info "Ollama not found. Using OpenAI as primary provider"
+        print_info "To use Ollama later, install it from https://ollama.ai"
+    fi
+    
+    # Update configuration file with plugin settings
+    update_config_with_plugins
+}
+
+# Function to setup Ollama provider
+setup_ollama_provider() {
+    print_step "Setting up Ollama provider..."
+    
+    # Check if Ollama service is running
+    if ! ollama list >/dev/null 2>&1; then
+        print_warning "Ollama service is not running"
+        print_info "Please start Ollama service with: ollama serve"
+        print_info "Then run this setup again"
+        return 1
+    fi
+    
+    # Check available models
+    local models
+    models=$(ollama list 2>/dev/null | tail -n +2 | awk '{print $1}' | grep -v "^$" || echo "")
+    
+    if [[ -z "$models" ]]; then
+        print_warning "No Ollama models found"
+        print_info "Installing recommended model for meeting assistance..."
+        
+        # Install llama2:7b as default
+        if ollama pull llama2:7b 2>/dev/null; then
+            print_status "Successfully installed llama2:7b model"
+        else
+            print_error "Failed to install llama2:7b model"
+            return 1
+        fi
+    else
+        print_status "Found Ollama models:"
+        echo "$models" | while read -r model; do
+            echo "  • $model"
+        done
+    fi
+    
+    # Set LLM provider to Ollama
+    export LLM_PROVIDER="ollama"
+    print_status "Set LLM provider to Ollama"
+}
+
+# Function to setup dual providers
+setup_dual_providers() {
+    print_step "Setting up dual provider configuration..."
+    
+    # Setup Ollama first
+    if setup_ollama_provider; then
+        print_status "Ollama configured successfully"
+    else
+        print_warning "Ollama setup failed, falling back to OpenAI only"
+        return 1
+    fi
+    
+    # Keep OpenAI as fallback
+    export LLM_PROVIDER="ollama"
+    export LLM_FALLBACK_TO_OPENAI="true"
+    print_status "Configured Ollama with OpenAI fallback"
+}
+
+# Function to update configuration with plugin settings
+update_config_with_plugins() {
+    print_step "Updating configuration with plugin settings..."
+    
+    local config_file=".env"
+    
+    if [[ -f "$config_file" ]]; then
+        # Add plugin configuration if not present
+        if ! grep -q "LLM_PROVIDER=" "$config_file"; then
+            echo "" >> "$config_file"
+            echo "# LLM Provider Configuration" >> "$config_file"
+            echo "LLM_PROVIDER=${LLM_PROVIDER:-openai}" >> "$config_file"
+            echo "LLM_FALLBACK_TO_OPENAI=${LLM_FALLBACK_TO_OPENAI:-true}" >> "$config_file"
+            echo "" >> "$config_file"
+            echo "# Ollama Settings (when using Ollama provider)" >> "$config_file"
+            echo "OLLAMA_BASE_URL=http://localhost:11434" >> "$config_file"
+            echo "OLLAMA_MODEL=llama2:7b" >> "$config_file"
+            echo "OLLAMA_TIMEOUT=30" >> "$config_file"
+            echo "OLLAMA_MAX_RETRIES=3" >> "$config_file"
+            echo "OLLAMA_AUTO_PULL=false" >> "$config_file"
+            
+            print_status "Updated configuration with plugin settings"
+        else
+            print_info "Plugin configuration already exists in $config_file"
+        fi
+    fi
+}
+
 # Function to build the application
 build_application() {
     print_step "Building the application..."
@@ -698,6 +846,9 @@ main() {
     # Create configuration
     create_config_file
     
+    # Setup plugin system
+    setup_plugin_system
+    
     # Build application
     build_application
     
@@ -735,16 +886,26 @@ main() {
     echo "   • Edit .env file to customize settings"
     echo "   • Adjust AUDIO_DEVICE if needed"
     echo "   • Set OPENAI_API_KEY"
+    echo "   • Choose LLM_PROVIDER (openai, ollama, or custom)"
+    echo
+    echo "4. ${WHITE}Plugin System:${NC}"
+    echo "   • Switch providers: ./target/release/meeting-assistant plugin set-llm <provider>"
+    echo "   • List plugins: ./target/release/meeting-assistant plugin list"
+    echo "   • Install plugins: ./target/release/meeting-assistant plugin install <source>"
     echo
 
     # Final checklist
     echo -e "${CYAN}📋 Final Checklist:${NC}"
-    echo "1. Edit .env file with your OpenAI API key"
+    echo "1. Edit .env file with your OpenAI API key (if using OpenAI)"
     if [[ "$OS" == "macos" ]]; then
         echo "2. Grant accessibility permissions to your terminal"
         echo "3. Configure audio (see instructions above)"
+        echo "4. Start Ollama service if using Ollama: ollama serve"
+        echo "5. Run: ./start.sh"
+    else
+        echo "2. Start Ollama service if using Ollama: ollama serve"
+        echo "3. Run: ./start.sh"
     fi
-    echo "4. Run: ./start.sh"
     echo
     echo -e "${CYAN}Need help? Check README.md or run './target/release/meeting-assistant --help'${NC}"
 }
