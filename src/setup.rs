@@ -278,7 +278,6 @@ impl SetupManager {
         // Install Whisper backends
         println!("{}", "Installing Whisper backends...".yellow());
         self.run_command_interactive(&["brew", "install", "whisper-cpp"]).await?;
-        self.run_command_interactive(&["brew", "install", "whisper"]).await?;
         
         Ok(())
     }

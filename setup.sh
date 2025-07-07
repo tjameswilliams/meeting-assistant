@@ -239,10 +239,9 @@ install_whisper_backends() {
         whisper_installed=true
     fi
     
-    # 2. Try Homebrew whisper (if available)
-    if [[ $OS == "macos" ]] && ! command_exists whisper; then
-        print_step "Installing Homebrew whisper..."
-        brew install whisper
+    # 2. Check if homebrew whisper is already available (but don't install it)
+    if [[ $OS == "macos" ]] && command_exists whisper; then
+        print_status "Homebrew whisper already installed"
         whisper_installed=true
     fi
     
