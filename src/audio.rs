@@ -570,7 +570,7 @@ impl AudioCapture {
         message.push_str("Troubleshooting steps:\n");
         message.push_str("1. Check available devices: ffmpeg -f avfoundation -list_devices true -i \"\"\n");
         message.push_str("2. Update AUDIO_DEVICE in .env file if needed\n");
-        message.push_str("3. Run setup: ./target/release/interview-assistant setup\n");
+        message.push_str("3. Run setup: ./target/release/meeting-assistant setup\n");
         message.push_str("4. Check permissions in System Preferences\n\n");
         
         message.push_str("Original error:\n");

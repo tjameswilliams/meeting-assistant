@@ -2,12 +2,24 @@
 name = "meeting-assistant-rs"
 version = "0.1.0"
 edition = "2021"
+default-run = "meeting-assistant"
 description = "Meeting Assistant CLI - Ultra-fast Rust implementation for meeting and collaboration support"
 license = "CC-BY-NC-4.0"
 
 [[bin]]
 name = "meeting-assistant"
 path = "src/main.rs"
+
+[[bin]]
+name = "process_audio"
+path = "src/bin/process_audio.rs"
+
+[features]
+default = ["sqlite-storage"]
+sqlite-storage = ["sqlx"]
+rust-diarization = ["rustfft", "ndarray"]
+onnx-runtime = ["ort"]
+whisper-pyannote = ["whisper-rs", "ort", "ndarray"]
 
 [dependencies]
 tokio = { version = "1.0", features = ["full"] }
@@ -28,7 +40,7 @@ tracing-appender = "0.2"
 indicatif = "0.17"
 pulldown-cmark = "0.9"
 syntect = "5.1"  # Syntax highlighting
-uuid = { version = "1.6", features = ["v4"] }
+uuid = { version = "1.6", features = ["v4", "serde"] }
 dirs = "5.0"
 base64 = "0.21"
 futures = "0.3"
@@ -49,6 +61,26 @@ libloading = "0.8"
 flate2 = "1.0"
 tar = "0.4"
 git2 = "0.18"
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid"], optional = true }
+# fastembed = "3.2"  # For local embeddings - disabled due to compilation issues
+# stopwords = "0.1"  # For text preprocessing - disabled for now
+bincode = "1.3"  # For serializing embeddings
+thiserror = "1.0"  # For structured error handling
+
+# Using OpenAI embeddings API for vector search
+# reqwest and serde_json are already included
+
+# Rust-native speaker diarization dependencies (all optional)
+ort = { version = "2.0.0-rc.10", optional = true }  # ONNX Runtime (latest RC)
+ndarray = { version = "0.16", optional = true }  # N-dimensional arrays
+hound = "3.5"  # WAV file handling
+rustfft = { version = "6.2", optional = true }  # FFT for spectral analysis
+
+# Whisper + PyAnnote dependencies
+whisper-rs = { version = "0.10", optional = true }  # OpenAI Whisper bindings
+
+[dev-dependencies]
+mockito = "1.0"
 
 [profile.release]
 lto = true

@@ -21,10 +21,20 @@ use lazy_static::lazy_static;
 use crate::types::{AppEvent, KeyState, ContentAnalysis};
 
 const DOUBLE_TAP_WINDOW_MS: u64 = 500;
+const CONTINUATION_CHECK_WINDOW_MS: u64 = 100;
+
+#[derive(Debug, Clone)]
+pub struct PendingEvent {
+    pub event: AppEvent,
+    pub timestamp: Instant,
+    pub key: Key,
+}
 
 pub struct KeyboardHandler {
     key_states: HashMap<String, KeyState>,
     last_event_time: Instant,
+    pending_events: Vec<PendingEvent>,
+    last_key_press: Instant,
 }
 
 impl KeyboardHandler {
@@ -32,11 +42,19 @@ impl KeyboardHandler {
         Self {
             key_states: HashMap::new(),
             last_event_time: Instant::now(),
+            pending_events: Vec::new(),
+            last_key_press: Instant::now(),
         }
     }
     
     pub fn handle_key_press(&mut self, key: Key) -> Option<AppEvent> {
         let now = Instant::now();
+        
+        // Track all key presses for continuation detection
+        self.last_key_press = now;
+        
+        // Check if this key press invalidates any pending events
+        self.check_pending_events_for_continuation(key, now);
         
         // Debounce rapid key presses
         if now.duration_since(self.last_event_time).as_millis() < 50 {
@@ -50,15 +68,17 @@ impl KeyboardHandler {
                 // We can't easily detect Ctrl+H in rdev, so we'll use a different approach
                 // For now, just detect H key double-tap for history
                 if self.is_double_tap(key, now) {
-                    println!("🔍 Double-tap 'H' detected - showing history");
-                    return Some(AppEvent::ShowHistory);
+                    println!("🔍 Double-tap 'H' detected - checking for continuation...");
+                    self.add_pending_event(AppEvent::ShowHistory, key, now);
+                    return None; // Don't emit immediately
                 }
             }
             Key::KeyR => {
                 // Check for double-tap R (cancel) vs Ctrl+R (clear context)
                 if self.is_double_tap(key, now) {
-                    println!("🛑 Double-tap 'R' detected - cancelling");
-                    return Some(AppEvent::Cancel);
+                    println!("🛑 Double-tap 'R' detected - checking for continuation...");
+                    self.add_pending_event(AppEvent::Cancel, key, now);
+                    return None; // Don't emit immediately
                 }
             }
             _ => {}
@@ -68,32 +88,106 @@ impl KeyboardHandler {
         match key {
             Key::KeyA => {
                 if self.is_double_tap(key, now) {
-                    println!("🎤 Double-tap 'A' detected - audio capture");
-                    return Some(AppEvent::AudioCapture);
+                    println!("🎤 Double-tap 'A' detected - checking for continuation...");
+                    self.add_pending_event(AppEvent::AudioCapture, key, now);
+                    return None; // Don't emit immediately
                 }
             }
             Key::KeyS => {
                 if self.is_double_tap(key, now) {
-                    println!("📋 Double-tap 'S' detected - clipboard analysis");
-                    return Some(AppEvent::ClipboardAnalysis);
+                    println!("📋 Double-tap 'S' detected - checking for continuation...");
+                    self.add_pending_event(AppEvent::ClipboardAnalysis, key, now);
+                    return None; // Don't emit immediately
                 }
             }
             Key::KeyQ => {
                 if self.is_double_tap(key, now) {
-                    println!("🔗 Double-tap 'Q' detected - combined mode");
-                    return Some(AppEvent::CombinedMode);
+                    println!("🔗 Double-tap 'Q' detected - checking for continuation...");
+                    self.add_pending_event(AppEvent::CombinedMode, key, now);
+                    return None; // Don't emit immediately
                 }
             }
             Key::KeyW => {
                 if self.is_double_tap(key, now) {
-                    println!("📸 Double-tap 'W' detected - screenshot mode");
-                    return Some(AppEvent::ScreenshotMode);
+                    println!("📸 Double-tap 'W' detected - checking for continuation...");
+                    self.add_pending_event(AppEvent::ScreenshotMode, key, now);
+                    return None; // Don't emit immediately
                 }
             }
             _ => {}
         }
         
         None
+    }
+    
+    /// Check for pending events that are ready to be emitted
+    /// This should be called periodically to check if any pending events have passed the continuation window
+    pub fn check_pending_events(&mut self) -> Option<AppEvent> {
+        let now = Instant::now();
+        
+        // Find events that have passed the continuation window
+        let mut ready_events = Vec::new();
+        let mut remaining_events = Vec::new();
+        
+        for event in self.pending_events.drain(..) {
+            let time_since_event = now.duration_since(event.timestamp);
+            
+            if time_since_event.as_millis() >= CONTINUATION_CHECK_WINDOW_MS as u128 {
+                // Event has passed the continuation window
+                ready_events.push(event);
+            } else {
+                // Event is still in the continuation window
+                remaining_events.push(event);
+            }
+        }
+        
+        // Restore remaining events
+        self.pending_events = remaining_events;
+        
+        // Return the first ready event (if any)
+        if let Some(event) = ready_events.first() {
+            println!("✅ Hotkey confirmed - no continuation detected");
+            Some(event.event.clone())
+        } else {
+            None
+        }
+    }
+    
+    /// Add a pending event that needs to be confirmed
+    fn add_pending_event(&mut self, event: AppEvent, key: Key, timestamp: Instant) {
+        self.pending_events.push(PendingEvent {
+            event,
+            timestamp,
+            key,
+        });
+    }
+    
+    /// Check if a key press invalidates any pending events
+    fn check_pending_events_for_continuation(&mut self, key: Key, now: Instant) {
+        let mut remaining_events = Vec::new();
+        
+        for event in self.pending_events.drain(..) {
+            let time_since_event = now.duration_since(event.timestamp);
+            
+            // If this is a different key pressed within the continuation window, cancel the event
+            if time_since_event.as_millis() < CONTINUATION_CHECK_WINDOW_MS as u128 {
+                let current_key_name = format!("{:?}", key);
+                let event_key_name = format!("{:?}", event.key);
+                
+                if current_key_name != event_key_name {
+                    println!("🚫 Hotkey cancelled - continued typing detected ({:?} -> {:?})", event.key, key);
+                    // Don't add this event back to remaining_events (effectively cancelling it)
+                } else {
+                    // Same key pressed again, keep the event
+                    remaining_events.push(event);
+                }
+            } else {
+                // Event is outside the continuation window, keep it
+                remaining_events.push(event);
+            }
+        }
+        
+        self.pending_events = remaining_events;
     }
     
     fn is_double_tap(&mut self, key: Key, now: Instant) -> bool {

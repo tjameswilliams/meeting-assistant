@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This is a high-performance CLI application built in Rust that provides AI-powered interview assistance with real-time audio capture, code analysis, and multi-modal AI integration. The project emphasizes performance, safety, and maintainability.
+This is a high-performance CLI application built in Rust that provides AI-powered meeting assistance with real-time audio capture, code analysis, and multi-modal AI integration. The project emphasizes performance, safety, and maintainability.
 
 ## Architecture & Design Principles
 
@@ -18,7 +18,7 @@ This is a high-performance CLI application built in Rust that provides AI-powere
 
 - `main.rs` - Application entry point and event loop coordination
 - `types.rs` - Core data structures, enums, and type definitions
-- `config.rs` - Configuration management and environment loading
+- `config.rs` - Configuration management and environment loading, the .env file is gitignored, so don't try to read it directly when generating code, you need to cat it.
 - `ai.rs` - OpenAI API integration and response processing
 - `audio.rs` - Audio capture and buffering with FFmpeg
 - `input.rs` - Keyboard and clipboard handling
@@ -228,7 +228,7 @@ CAPTURE_DURATION=15
 
 - **One concern per module** - keep modules focused
 - **Public API first** - design interfaces before implementation
-- **Documentation alongside code** - update docs with changes
+- **Documentation alongside code** - update docs with changes, documentation markdown files go in /docs
 - **Consistent error handling** across all modules
 
 ### Git Workflow

@@ -40,14 +40,14 @@ impl SetupManager {
         
         let temp_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join(".interview-assistant")
+            .join(".meeting-assistant")
             .join("setup");
         
         Self { os, temp_dir }
     }
     
     pub async fn run_interactive_setup(&self) -> Result<()> {
-        println!("{}", "🎤 Interview Assistant CLI - Interactive Setup".cyan().bold());
+        println!("{}", "🎤 Meeting Assistant CLI - Interactive Setup".cyan().bold());
         println!("{}", "==============================================".cyan());
         println!();
         
@@ -96,7 +96,7 @@ impl SetupManager {
     }
     
     async fn print_welcome(&self) -> Result<()> {
-        println!("{}", "Welcome to the Interview Assistant setup!".green().bold());
+        println!("{}", "Welcome to the Meeting Assistant setup!".green().bold());
         println!();
         println!("This interactive setup will guide you through:");
         println!("• Installing required dependencies");
@@ -167,7 +167,7 @@ impl SetupManager {
         self.print_check_result("Configuration (.env)", status.config_exists);
         
         // Check build
-        status.app_built = PathBuf::from("target/release/interview-assistant").exists();
+        status.app_built = PathBuf::from("target/release/meeting-assistant").exists();
         self.print_check_result("Application built", status.app_built);
         
         // Check plugin system
@@ -383,7 +383,7 @@ impl SetupManager {
         println!("{}", "Step 2: Create Aggregate Device".yellow().bold());
         println!("• Open 'Audio MIDI Setup' (Applications > Utilities)");
         println!("• Click '+' button → 'Create Aggregate Device'");
-        println!("• Name it 'Interview Assistant Input'");
+        println!("• Name it 'Meeting Assistant Input'");
         println!("• Check boxes for:");
         println!("  - Your built-in microphone");
         println!("  - BlackHole 2ch");
@@ -394,7 +394,7 @@ impl SetupManager {
         println!("• System Preferences → Sound → Output");
         println!("• Select 'BlackHole 2ch' as output device");
         println!("• System Preferences → Sound → Input");
-        println!("• Select 'Interview Assistant Input' as input device");
+        println!("• Select 'Meeting Assistant Input' as input device");
         println!();
         
         println!("{}", "Step 4: Test Setup".yellow().bold());
@@ -548,6 +548,10 @@ impl SetupManager {
         let llm_provider = self.get_current_llm_provider().await
             .unwrap_or_else(|| "openai".to_string());
         
+        // Get selected Ollama model (if any)
+        let ollama_model = self.get_selected_ollama_model().await
+            .unwrap_or_else(|| "llama2:7b".to_string());
+        
         // Create config file
         let config_content = format!(
             r#"# Meeting Assistant CLI - Rust Edition Configuration
@@ -566,7 +570,7 @@ OPENAI_TEMPERATURE=0.5
 
 # Optional - Ollama Settings (when using Ollama provider)
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=llama2:7b
+OLLAMA_MODEL={}
 OLLAMA_TIMEOUT=30
 OLLAMA_MAX_RETRIES=3
 OLLAMA_AUTO_PULL=false
@@ -586,7 +590,7 @@ MAX_RECORDING_TIME=30000
 # Optional - Temporary Directory
 # TEMP_DIR=$HOME/.meeting-assistant/temp
 "#,
-            api_key, llm_provider, audio_device
+            api_key, llm_provider, ollama_model, audio_device
         );
         
         fs::write(&config_file, config_content)
@@ -691,7 +695,7 @@ MAX_RECORDING_TIME=30000
             println!("{}", "✅ Build successful!".green());
             
             // Show binary info
-            let binary_path = PathBuf::from("target/release/interview-assistant");
+            let binary_path = PathBuf::from("target/release/meeting-assistant");
             if binary_path.exists() {
                 let metadata = fs::metadata(&binary_path)?;
                 let size = metadata.len();
@@ -756,7 +760,7 @@ MAX_RECORDING_TIME=30000
         println!();
         
         println!("{}", "🚀 How to run:".cyan().bold());
-        println!("   ./target/release/interview-assistant");
+        println!("   ./target/release/meeting-assistant");
         println!("   or use: ./start.sh");
         println!();
         
@@ -965,19 +969,23 @@ MAX_RECORDING_TIME=30000
             self.start_ollama().await?;
         }
         
-        // Install recommended models
+        // Get available models and let user select
         let models = self.get_ollama_models().await;
         if models.is_empty() {
-            println!("{}", "No Ollama models found. Installing recommended models...".yellow());
-            self.install_ollama_models().await?;
+            println!("{}", "No Ollama models found. You'll need to install one first.".yellow());
+            self.select_and_install_ollama_models().await?;
         } else {
             println!("{}", format!("Found {} Ollama models", models.len()).green());
             for model in &models {
                 println!("  • {}", model.green());
             }
             
+            // Let user select which model to use as default
+            let selected_model = self.select_ollama_model(&models).await?;
+            self.set_default_ollama_model(&selected_model).await?;
+            
             if self.ask_yes_no("Would you like to install additional models?").await? {
-                self.install_ollama_models().await?;
+                self.select_and_install_ollama_models().await?;
             }
         }
         
@@ -1207,6 +1215,20 @@ MAX_RECORDING_TIME=30000
         })
     }
     
+    async fn get_selected_ollama_model(&self) -> Option<String> {
+        env::var("OLLAMA_MODEL").ok().or_else(|| {
+            // Check .env file
+            if let Ok(contents) = fs::read_to_string(".env") {
+                for line in contents.lines() {
+                    if line.starts_with("OLLAMA_MODEL=") {
+                        return Some(line.split('=').nth(1)?.to_string());
+                    }
+                }
+            }
+            None
+        })
+    }
+    
     async fn install_ollama(&self) -> Result<()> {
         println!("{}", "Installing Ollama...".yellow());
         
@@ -1258,7 +1280,7 @@ MAX_RECORDING_TIME=30000
         Ok(())
     }
     
-    async fn install_ollama_models(&self) -> Result<()> {
+    async fn select_and_install_ollama_models(&self) -> Result<()> {
         println!("{}", "📦 Installing Ollama Models".cyan().bold());
         
         let recommended_models = vec![
@@ -1289,6 +1311,65 @@ MAX_RECORDING_TIME=30000
         Ok(())
     }
     
+    async fn select_ollama_model(&self, available_models: &[String]) -> Result<String> {
+        println!("{}", "🎯 Select Default Model".cyan().bold());
+        println!("Choose which model to use as the default for the meeting assistant:");
+        
+        for (i, model) in available_models.iter().enumerate() {
+            println!("{}. {}", i + 1, model.green());
+        }
+        println!();
+        
+        loop {
+            print!("Enter your choice (1-{}): ", available_models.len());
+            io::stdout().flush()?;
+            
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            
+            if let Ok(choice) = input.trim().parse::<usize>() {
+                if choice >= 1 && choice <= available_models.len() {
+                    let selected_model = &available_models[choice - 1];
+                    println!("{}", format!("✅ Selected model: {}", selected_model).green());
+                    return Ok(selected_model.clone());
+                }
+            }
+            
+            println!("{}", format!("Please enter a number between 1 and {}", available_models.len()).yellow());
+        }
+    }
+    
+    async fn set_default_ollama_model(&self, model: &str) -> Result<()> {
+        println!("{}", format!("Setting {} as default Ollama model", model).yellow());
+        
+        // Update the .env file if it exists
+        let env_file = PathBuf::from(".env");
+        if env_file.exists() {
+            let content = fs::read_to_string(&env_file)?;
+            let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+            
+            let mut found_ollama_model = false;
+            for line in &mut lines {
+                if line.starts_with("OLLAMA_MODEL=") {
+                    *line = format!("OLLAMA_MODEL={}", model);
+                    found_ollama_model = true;
+                    break;
+                }
+            }
+            
+            if !found_ollama_model {
+                lines.push(format!("OLLAMA_MODEL={}", model));
+            }
+            
+            fs::write(&env_file, lines.join("\n"))?;
+            println!("{}", "✅ Default model updated in .env file".green());
+        } else {
+            println!("{}", "⚠️  .env file not found, model selection will be applied when configuration is created".yellow());
+        }
+        
+        Ok(())
+    }
+    
     async fn install_ollama_model(&self, model: &str) -> Result<()> {
         println!("{}", format!("Installing model {}...", model).yellow());
         
@@ -1310,13 +1391,51 @@ MAX_RECORDING_TIME=30000
     async fn test_ollama_connection(&self) -> Result<bool> {
         println!("{}", "Testing Ollama connection...".yellow());
         
-        let output = Command::new("ollama")
-            .args(["run", "llama2:7b", "Hello, can you hear me?"])
-            .output()
-            .await
-            .context("Failed to test Ollama connection")?;
+        // First, check if any models are available
+        let models = self.get_ollama_models().await;
+        if models.is_empty() {
+            println!("{}", "No models available for testing. Skipping connection test.".yellow());
+            return Ok(self.check_ollama_running().await);
+        }
         
-        Ok(output.status.success())
+        // Use the first available model for testing
+        let test_model = &models[0];
+        println!("{}", format!("Testing with model: {}", test_model).cyan());
+        
+        // Use 'generate' instead of 'run' for non-interactive generation with timeout
+        let result = tokio::time::timeout(
+            Duration::from_secs(10), // 10-second timeout
+            Command::new("ollama")
+                .args(["generate", test_model, "Hi"])
+                .output()
+        ).await;
+        
+        match result {
+            Ok(Ok(output)) => {
+                if output.status.success() {
+                    let response = String::from_utf8_lossy(&output.stdout);
+                    // Check if we got some response (not empty)
+                    if !response.trim().is_empty() {
+                        println!("{}", "✅ Connection test successful!".green());
+                        Ok(true)
+                    } else {
+                        println!("{}", "⚠️ Got empty response, but service is running".yellow());
+                        Ok(true)
+                    }
+                } else {
+                    println!("{}", "⚠️ Generate command failed, checking service status...".yellow());
+                    Ok(self.check_ollama_running().await)
+                }
+            }
+            Ok(Err(e)) => {
+                println!("{}", format!("⚠️ Command error: {}", e).yellow());
+                Ok(self.check_ollama_running().await)
+            }
+            Err(_) => {
+                println!("{}", "⚠️ Connection test timed out, but service appears to be running".yellow());
+                Ok(self.check_ollama_running().await)
+            }
+        }
     }
     
     async fn test_openai_connection(&self, api_key: &str) -> Result<bool> {

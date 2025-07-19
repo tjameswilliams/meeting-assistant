@@ -72,8 +72,8 @@ impl OpenAIClient {
         
         let transcript = response.text().await?;
         
-        // Clean up the audio file after transcription
-        let _ = fs::remove_file(audio_file);
+        // Note: Don't delete the audio file here as it might be needed by other transcription methods
+        // File cleanup should happen at the application level after all transcription attempts
         
         Ok(transcript.trim().to_string())
     }
@@ -516,7 +516,7 @@ Be detailed about what you observe visually, then connect it meaningfully to the
         found_technologies.into_iter().take(6).collect()
     }
     
-    async fn simple_completion(&self, system_prompt: &str, user_prompt: &str, max_tokens: u32) -> Result<String> {
+    pub async fn simple_completion(&self, system_prompt: &str, user_prompt: &str, max_tokens: u32) -> Result<String> {
         let request_body = json!({
             "model": self.config.model,
             "messages": [

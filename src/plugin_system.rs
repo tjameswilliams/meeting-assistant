@@ -35,8 +35,10 @@ pub enum PluginEvent {
     
     // Audio processing events
     AudioCaptured { file_path: PathBuf },
+    AudioRecordingCompleted { file_path: PathBuf, duration_seconds: f64 },
     AudioBufferStarted,
     AudioBufferStopped,
+    TranscriptionComplete { text: String, confidence: f32, speaker_id: Option<String> },
     
     // AI/LLM processing events
     BeforePromptRequest { context: String },
@@ -133,6 +135,9 @@ pub trait Plugin: Send + Sync {
         let _ = config;
         Ok(())
     }
+    
+    /// Enable downcasting for specific plugin types
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
 /// LLM provider plugin trait for replacing AI functionality
@@ -392,17 +397,31 @@ impl PluginManager {
     pub async fn fire_event(&self, event: PluginEvent) -> Result<Vec<PluginHookResult>> {
         let mut results = Vec::new();
         
-        let plugins = self.plugins.read().await;
-        for plugin in plugins.values() {
-            if plugin.subscribed_events().contains(&event) {
-                // Note: We can't call handle_event here because we have a read lock
-                // This is a design issue that needs to be resolved
-                // For now, we'll collect the plugins that need to be called
-                results.push(PluginHookResult::Continue);
+        // We need to collect plugin names first, then handle events with write lock
+        let plugin_names: Vec<String> = {
+            let plugins = self.plugins.read().await;
+            plugins.keys().cloned().collect()
+        };
+        
+        // Now handle events with write lock
+        let mut plugins = self.plugins.write().await;
+        for plugin_name in plugin_names {
+            if let Some(plugin) = plugins.get_mut(&plugin_name) {
+                if plugin.subscribed_events().iter().any(|subscribed_event| {
+                    std::mem::discriminant(subscribed_event) == std::mem::discriminant(&event)
+                }) {
+                    match plugin.handle_event(&event, &self.context).await {
+                        Ok(result) => {
+                            results.push(result);
+                        }
+                        Err(e) => {
+                            println!("⚠️  Plugin {} failed to handle event: {}", plugin_name, e);
+                        }
+                    }
+                }
             }
         }
         
-        // TODO: Implement proper event handling with plugin state mutation
         Ok(results)
     }
     
@@ -468,6 +487,18 @@ impl PluginManager {
         Ok(None)
     }
     
+    /// Transcribe audio using the active LLM provider
+    pub async fn transcribe_audio(&self, audio_file: &PathBuf) -> Result<Option<String>> {
+        if let Some(provider_name) = &*self.active_llm_provider.read().await {
+            let providers = self.llm_providers.read().await;
+            if let Some(provider) = providers.get(provider_name) {
+                let result = provider.transcribe_audio(audio_file, &self.context).await?;
+                return Ok(result);
+            }
+        }
+        Ok(None)
+    }
+    
     /// List all installed plugins
     pub async fn list_plugins(&self) -> HashMap<String, PluginInfo> {
         let mut info = HashMap::new();
@@ -485,6 +516,11 @@ impl PluginManager {
         }
         
         info
+    }
+    
+    /// Get all plugins for configuration (used internally)
+    pub fn get_plugins(&self) -> &Arc<RwLock<HashMap<String, Box<dyn Plugin>>>> {
+        &self.plugins
     }
     
     async fn install_from_github(&self, owner: &str, repo: &str, branch: Option<&str>) -> Result<String> {
@@ -567,7 +603,7 @@ impl PluginRegistry {
     }
 }
 
-/// Example LLM provider implementation for OpenRouter
+/// Example OpenRouter provider implementation
 pub struct OpenRouterProvider {
     api_key: String,
     base_url: String,
@@ -605,6 +641,32 @@ impl Plugin for OpenRouterProvider {
             _ => Ok(PluginHookResult::Continue),
         }
     }
+
+    fn validate_config(&self, config: &serde_json::Value) -> Result<()> {
+        if let Some(enabled) = config.get("enabled") {
+            if !enabled.is_boolean() {
+                return Err(anyhow::anyhow!("'enabled' must be a boolean"));
+            }
+        }
+        
+        if let Some(model) = config.get("default_model") {
+            if !model.is_string() {
+                return Err(anyhow::anyhow!("'default_model' must be a string"));
+            }
+        }
+        
+        if let Some(api_key) = config.get("api_key") {
+            if !api_key.is_string() {
+                return Err(anyhow::anyhow!("'api_key' must be a string"));
+            }
+        }
+        
+        Ok(())
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 #[async_trait]
@@ -627,50 +689,6 @@ impl LLMProvider for OpenRouterProvider {
         options: &LLMOptions,
     ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
         // TODO: Implement OpenRouter streaming API
-        let _ = (prompt, context, options);
-        use futures::stream;
-        Ok(Box::new(stream::empty()))
-    }
-}
-
-/// Example Ollama provider implementation
-pub struct OllamaProvider {
-    base_url: String,
-    client: reqwest::Client,
-}
-
-#[async_trait]
-impl Plugin for OllamaProvider {
-    fn name(&self) -> &str { "ollama" }
-    fn version(&self) -> &str { "1.0.0" }
-    fn description(&self) -> &str { "Local Ollama LLM provider" }
-    fn author(&self) -> &str { "Meeting Assistant Team" }
-    
-    fn subscribed_events(&self) -> Vec<PluginEvent> {
-        vec![]
-    }
-}
-
-#[async_trait]
-impl LLMProvider for OllamaProvider {
-    async fn generate_completion(
-        &self,
-        prompt: &str,
-        context: &PluginContext,
-        options: &LLMOptions,
-    ) -> Result<String> {
-        // TODO: Implement Ollama API call
-        let _ = (prompt, context, options);
-        Ok("Ollama response".to_string())
-    }
-    
-    async fn generate_streaming_completion(
-        &self,
-        prompt: &str,
-        context: &PluginContext,
-        options: &LLMOptions,
-    ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
-        // TODO: Implement Ollama streaming API
         let _ = (prompt, context, options);
         use futures::stream;
         Ok(Box::new(stream::empty()))

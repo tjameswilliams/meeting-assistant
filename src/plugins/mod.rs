@@ -17,6 +17,14 @@
 
 pub mod ollama_provider;
 pub mod sentiment_analyzer;
+pub mod rust_native_diarization;
+pub mod stt_post_processor;
+pub mod advanced_diarization;
+pub mod transcript_interactive;
 
 pub use ollama_provider::OllamaProvider;
-pub use sentiment_analyzer::SentimentAnalyzerPlugin; 
+pub use sentiment_analyzer::SentimentAnalyzerPlugin;
+pub use rust_native_diarization::{SpectralDiarizationPlugin};
+pub use advanced_diarization::{create_advanced_diarization_plugin, AdvancedDiarizationPlugin};
+pub use stt_post_processor::STTPostProcessorPlugin;
+pub use transcript_interactive::{create_transcript_interactive_plugin, TranscriptInteractivePlugin}; 

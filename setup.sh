@@ -95,22 +95,15 @@ safe_read() {
     local var_name="$2"
     local default_value="$3"
     
-    # Reset terminal and display prompt
-    reset_terminal
+    # Simple, reliable read
     printf "%s" "$prompt"
+    local input
+    read -r input || input=""
     
-    # Use a clean read with timeout
-    if read -r -t 300 input; then
-        if [[ -n "$input" ]]; then
-            eval "$var_name=\"$input\""
-        elif [[ -n "$default_value" ]]; then
-            eval "$var_name=\"$default_value\""
-        fi
-    else
-        # Timeout or error, use default
-        if [[ -n "$default_value" ]]; then
-            eval "$var_name=\"$default_value\""
-        fi
+    if [[ -n "$input" ]]; then
+        eval "$var_name=\"$input\""
+    elif [[ -n "$default_value" ]]; then
+        eval "$var_name=\"$default_value\""
     fi
 }
 
@@ -205,6 +198,112 @@ install_audio_tools_macos() {
     fi
 }
 
+# Function to configure whisper backends with model selection
+configure_whisper_backends() {
+    print_step "Configuring Whisper backends..."
+    
+    local whisper_backends=()
+    local selected_backend=""
+    
+    # Check available backends
+    if command_exists whisper-cpp || command_exists whisper-cli; then
+        whisper_backends+=("whisper.cpp")
+    fi
+    if command_exists whisper; then
+        whisper_backends+=("openai-whisper")
+    fi
+    if command_exists faster-whisper; then
+        whisper_backends+=("faster-whisper")
+    fi
+    
+    if [[ ${#whisper_backends[@]} -eq 0 ]]; then
+        print_warning "No local Whisper backends found. Will use OpenAI API for transcription."
+        export WHISPER_BACKEND="openai"
+        return 0
+    fi
+    
+    # Let user select backend if multiple are available
+    if [[ ${#whisper_backends[@]} -gt 1 ]]; then
+        echo -e "${CYAN}Multiple Whisper backends detected:${NC}"
+        local i=1
+        for backend in "${whisper_backends[@]}"; do
+            case "$backend" in
+                "whisper.cpp")
+                    echo "$i. whisper.cpp - Fastest, C++ implementation"
+                    ;;
+                "faster-whisper")
+                    echo "$i. faster-whisper - Fast, Python with CTranslate2"
+                    ;;
+                "openai-whisper")
+                    echo "$i. openai-whisper - Standard Python implementation"
+                    ;;
+            esac
+            ((i++))
+        done
+        echo
+        
+        local choice=""
+        safe_read "Enter your choice (1-${#whisper_backends[@]}) or press Enter for default (whisper.cpp): " choice "1"
+        
+        # Validate choice
+        if [[ "$choice" =~ ^[1-9]$ ]] && [[ "$choice" -le "${#whisper_backends[@]}" ]]; then
+            selected_backend="${whisper_backends[$((choice-1))]}"
+        else
+            selected_backend="${whisper_backends[0]}"
+        fi
+    else
+        selected_backend="${whisper_backends[0]}"
+    fi
+    
+    print_info "Selected backend: $selected_backend"
+    
+    # Configure the selected backend
+    case "$selected_backend" in
+        "whisper.cpp")
+            export WHISPER_BACKEND="whisper.cpp"
+            # Model selection handled by download_whisper_models()
+            ;;
+        "faster-whisper"|"openai-whisper")
+            export WHISPER_BACKEND="$selected_backend"
+            
+            # For Python backends, let user select model
+            echo -e "${CYAN}Model Selection for $selected_backend:${NC}"
+            echo "Choose your preferred model:"
+            echo
+            echo "1. tiny.en    - Fastest, lowest accuracy"
+            echo "2. base.en    - Good balance, recommended"
+            echo "3. small.en   - Better accuracy, slower"
+            echo "4. medium.en  - High accuracy, much slower"
+            echo "5. large-v3   - Best accuracy, slowest"
+            echo
+            
+            local model_choice=""
+            safe_read "Enter your choice (1-5) or press Enter for default (base.en): " model_choice "2"
+            
+            case "$model_choice" in
+                "1")
+                    export WHISPER_MODEL="tiny.en"
+                    ;;
+                "3")
+                    export WHISPER_MODEL="small.en"
+                    ;;
+                "4")
+                    export WHISPER_MODEL="medium.en"
+                    ;;
+                "5")
+                    export WHISPER_MODEL="large-v3"
+                    ;;
+                *)
+                    export WHISPER_MODEL="base.en"
+                    ;;
+            esac
+            
+            print_info "Selected model: $WHISPER_MODEL"
+            print_info "Model will be downloaded automatically on first use"
+            ;;
+    esac
+}
+
 # Function to install Whisper backends
 install_whisper_backends() {
     print_step "Installing Whisper backends..."
@@ -261,15 +360,194 @@ install_whisper_backends() {
     
     if $whisper_installed; then
         print_status "At least one Whisper backend installed successfully"
+        
+        # Configure the installed backends
+        configure_whisper_backends
     else
         print_warning "No Whisper backend installed. Will use OpenAI API (slower)"
+        export WHISPER_BACKEND="openai"
+    fi
+}
+
+# Function to let user select whisper model
+select_whisper_model() {
+    # Send menu to stderr so it doesn't get captured in command substitution
+    echo -e "${CYAN}Whisper Model Selection:${NC}" >&2
+    echo "Choose your preferred whisper model (balance of speed vs accuracy):" >&2
+    echo >&2
+    echo "1. tiny.en    - Fastest, lowest accuracy (~39 MB)" >&2
+    echo "2. base.en    - Good balance, recommended (~147 MB)" >&2
+    echo "3. small.en   - Better accuracy, slower (~466 MB)" >&2
+    echo "4. medium.en  - High accuracy, much slower (~1.5 GB)" >&2
+    echo "5. large-v3   - Best accuracy, slowest (~3.1 GB)" >&2
+    echo >&2
+    echo "For most users, 'base.en' provides the best speed/accuracy balance." >&2
+    echo >&2
+    
+    local choice=""
+    printf "Enter your choice (1-5) or press Enter for default (base.en): " >&2
+    read -r choice || choice=""
+    
+    # Validate and return model name (only this goes to stdout)
+    case "$choice" in
+        "1")
+            echo "tiny.en"
+            ;;
+        "2"|"")
+            echo "base.en"
+            ;;
+        "3")
+            echo "small.en"
+            ;;
+        "4")
+            echo "medium.en"
+            ;;
+        "5")
+            echo "large-v3"
+            ;;
+        *)
+            echo "base.en"
+            ;;
+    esac
+}
+
+# Function to get correct download URL for whisper model
+get_whisper_model_url() {
+    local model="$1"
+    
+    # Validate model name
+    if [[ -z "$model" ]] || [[ "$model" == *" "* ]] || [[ "$model" == *"Selection"* ]]; then
+        print_error "Invalid model name: '$model'" >&2
+        echo ""
+        return 1
+    fi
+    
+    case "$model" in
+        "large-v3")
+            echo "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin"
+            ;;
+        "tiny.en"|"base.en"|"small.en"|"medium.en")
+            echo "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-$model.bin"
+            ;;
+        *)
+            print_error "Unknown model: '$model'" >&2
+            echo ""
+            return 1
+            ;;
+    esac
+}
+
+# Function to test URL accessibility
+test_url_accessibility() {
+    local url="$1"
+    
+    # Validate URL first
+    if [[ -z "$url" ]] || [[ "$url" == "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-.bin" ]]; then
+        print_error "Invalid or empty URL"
+        return 1
+    fi
+    
+    print_info "Testing URL accessibility: $url"
+    
+    # Test with curl and capture output for debugging
+    local curl_output
+    curl_output=$(curl -I -L --max-time 10 "$url" 2>&1)
+    local curl_exit_code=$?
+    
+    if [[ $curl_exit_code -eq 0 ]]; then
+        print_status "URL is accessible"
+        return 0
+    else
+        print_warning "URL is not accessible (curl exit code: $curl_exit_code)"
+        print_info "Curl output: $(echo "$curl_output" | head -3)"
+        return 1
+    fi
+}
+
+# Function to provide manual download instructions
+provide_manual_download_instructions() {
+    local model="$1"
+    local model_dir="$2"
+    
+    # Validate inputs
+    if [[ -z "$model" ]] || [[ "$model" == *"Selection"* ]] || [[ "$model" == *"Choose"* ]]; then
+        print_error "Invalid model name for manual download instructions"
+        return 1
+    fi
+    
+    echo
+    print_info "Manual Download Instructions:"
+    echo
+    echo "If automatic download fails, you can download the model manually:"
+    echo
+    echo "1. Visit: https://huggingface.co/ggerganov/whisper.cpp/tree/main"
+    echo "2. Download: ggml-$model.bin"
+    echo "3. Move the file to: $model_dir/"
+    echo "4. Ensure the file is named: ggml-$model.bin"
+    echo
+    echo "Alternative download command:"
+    local download_url
+    download_url=$(get_whisper_model_url "$model")
+    echo "curl -L -o '$model_dir/ggml-$model.bin' '$download_url'"
+    echo
+    
+    # Ask user if they want to continue with manual download
+    local continue_manual=""
+    printf "Would you like to continue with manual download? (y/n): "
+    read -r continue_manual || continue_manual="n"
+    
+    if [[ "$continue_manual" =~ ^[Yy]$ ]]; then
+        print_info "Please download the model manually and then run the setup again."
+        return 1
+    else
+        print_info "Continuing with fallback model..."
+        return 0
+    fi
+}
+
+# Function to validate whisper model file
+validate_whisper_model() {
+    local model_file="$1"
+    local model_name="$2"
+    
+    print_info "Validating model file..."
+    
+    # Check if file exists
+    if [[ ! -f "$model_file" ]]; then
+        print_error "Model file does not exist: $model_file"
+        return 1
+    fi
+    
+    # Check file size (basic validation)
+    local file_size
+    file_size=$(stat -c%s "$model_file" 2>/dev/null || stat -f%z "$model_file" 2>/dev/null || echo "0")
+    
+    if [[ "$file_size" -lt 1000000 ]]; then  # Less than 1MB is probably corrupted
+        print_error "Model file is too small (${file_size} bytes) - likely corrupted"
+        return 1
+    fi
+    
+    # Show file info
+    local file_size_human
+    file_size_human=$(ls -lh "$model_file" | awk '{print $5}')
+    print_info "Model file size: $file_size_human"
+    
+    # Check if it's a valid binary file (basic check)
+    if file "$model_file" | grep -q "data"; then
+        print_info "Model file appears to be a valid binary file"
+        return 0
+    else
+        print_warning "Model file may not be a valid binary file"
+        # Don't fail here, as the file command might not be available
+        return 0
     fi
 }
 
 # Function to download whisper.cpp models
 download_whisper_models() {
-    if command_exists whisper-cpp || command_exists whisper-cli; then
-        print_step "Downloading whisper.cpp models..."
+    # Only run if whisper.cpp is the selected backend
+    if [[ "$WHISPER_BACKEND" == "whisper.cpp" ]] && (command_exists whisper-cpp || command_exists whisper-cli); then
+        print_step "Setting up whisper.cpp models..."
         
         local model_dir
         if [[ $OS == "macos" ]]; then
@@ -283,15 +561,125 @@ download_whisper_models() {
         
         mkdir -p "$model_dir"
         
-        # Download base.en model (good balance of speed and accuracy)
-        local model_file="$model_dir/ggml-base.en.bin"
-        if [[ ! -f "$model_file" ]]; then
-            print_step "Downloading base.en model..."
-            curl -L -o "$model_file" "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
-            print_status "Model downloaded to $model_file"
-        else
-            print_status "whisper.cpp model already exists"
+        # Let user select model
+        local selected_model
+        selected_model=$(select_whisper_model)
+        
+        # Validate selected model
+        if [[ -z "$selected_model" ]] || [[ "$selected_model" == *"Selection"* ]] || [[ "$selected_model" == *"Choose"* ]]; then
+            print_error "Invalid model selection. Using default base.en model."
+            selected_model="base.en"
         fi
+        
+        print_info "Selected model: $selected_model"
+        
+        # Download selected model
+        local model_file="$model_dir/ggml-$selected_model.bin"
+        if [[ ! -f "$model_file" ]]; then
+            print_step "Downloading $selected_model model..."
+            
+            # Get correct download URL
+            local download_url
+            download_url=$(get_whisper_model_url "$selected_model")
+            
+            print_info "Downloading from: $download_url"
+            
+            # Test URL accessibility first
+            if ! test_url_accessibility "$download_url"; then
+                print_error "URL is not accessible"
+                if provide_manual_download_instructions "$selected_model" "$model_dir"; then
+                    export WHISPER_MODEL="base.en"
+                    return 0
+                else
+                    return 1
+                fi
+            fi
+            
+            # Try downloading with better error handling
+            if curl -L --fail --progress-bar -o "$model_file.tmp" "$download_url"; then
+                mv "$model_file.tmp" "$model_file"
+                
+                # Validate downloaded model
+                if validate_whisper_model "$model_file" "$selected_model"; then
+                    print_status "Model downloaded and validated successfully"
+                    export WHISPER_MODEL="$selected_model"
+                else
+                    print_error "Downloaded model appears to be corrupted"
+                    rm -f "$model_file"
+                    # Continue to fallback logic
+                    false
+                fi
+            else
+                # Clean up failed download
+                rm -f "$model_file.tmp"
+                
+                print_error "Failed to download $selected_model model"
+                print_info "Possible issues:"
+                print_info "  1. Network connectivity problem"
+                print_info "  2. Invalid model URL"
+                print_info "  3. Insufficient disk space"
+                
+                # Try alternative download methods
+                print_step "Attempting alternative download method..."
+                
+                                 # Try with different curl options
+                 if curl -L --max-time 300 --retry 3 --retry-delay 5 -o "$model_file.tmp" "$download_url"; then
+                     mv "$model_file.tmp" "$model_file"
+                     
+                     # Validate the downloaded model
+                     if validate_whisper_model "$model_file" "$selected_model"; then
+                         print_status "Model downloaded and validated successfully with retry"
+                         export WHISPER_MODEL="$selected_model"
+                     else
+                         print_error "Downloaded model appears to be corrupted even after retry"
+                         rm -f "$model_file"
+                         # Continue to fallback logic
+                         false
+                     fi
+                else
+                    rm -f "$model_file.tmp"
+                    
+                    print_warning "All download attempts failed. Falling back to base.en model"
+                    
+                    # Try to download base.en as fallback
+                    local fallback_file="$model_dir/ggml-base.en.bin"
+                    if [[ ! -f "$fallback_file" ]]; then
+                        local fallback_url="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
+                        print_step "Downloading base.en fallback model..."
+                        
+                                                 if curl -L --fail --progress-bar -o "$fallback_file.tmp" "$fallback_url"; then
+                             mv "$fallback_file.tmp" "$fallback_file"
+                             
+                             # Validate the fallback model
+                             if validate_whisper_model "$fallback_file" "base.en"; then
+                                 print_status "Fallback model downloaded and validated successfully"
+                                 export WHISPER_MODEL="base.en"
+                             else
+                                 print_error "Fallback model appears to be corrupted"
+                                 rm -f "$fallback_file"
+                                 print_warning "Unable to download a valid model automatically"
+                                 provide_manual_download_instructions "base.en" "$model_dir"
+                                 export WHISPER_MODEL="base.en"
+                             fi
+                        else
+                            rm -f "$fallback_file.tmp"
+                            print_error "Failed to download fallback model"
+                            print_warning "You may need to download models manually"
+                            print_info "Visit: https://huggingface.co/ggerganov/whisper.cpp/tree/main"
+                            export WHISPER_MODEL="base.en"
+                        fi
+                    else
+                        print_info "Using existing base.en model"
+                        export WHISPER_MODEL="base.en"
+                    fi
+                fi
+            fi
+        else
+            print_status "Model $selected_model already exists"
+            export WHISPER_MODEL="$selected_model"
+        fi
+    elif [[ "$WHISPER_BACKEND" != "openai" ]]; then
+        print_info "Skipping whisper.cpp model download (using $WHISPER_BACKEND backend)"
     fi
 }
 
@@ -408,6 +796,400 @@ setup_permissions_macos() {
     echo
 }
 
+# Function to install Python dependencies for speaker diarization
+install_python_diarization_deps() {
+    print_step "Setting up speaker diarization..."
+    
+    echo -e "${CYAN}Speaker Diarization Setup:${NC}"
+    echo "The Meeting Assistant supports advanced speaker diarization using multiple providers:"
+    echo
+    echo "Available providers:"
+    echo "1. ${WHITE}ElevenLabs Scribe v1${NC} - Cloud-based, highest quality"
+    echo "   • State-of-the-art accuracy with up to 32 speakers"
+    echo "   • 99 languages supported"
+    echo "   • Audio event detection (laughter, applause, etc.)"
+    echo "   • Word-level timestamps"
+    echo "   • Requires ElevenLabs API key"
+    echo
+    echo "2. ${WHITE}Whisper + PyAnnote (Local)${NC} - Full local processing"
+    echo "   • OpenAI Whisper (transcription) + PyAnnote (diarization)"
+    echo "   • Requires Python dependencies (~200-500MB download)"
+    echo "   • HuggingFace account (free) for PyAnnote models"
+    echo "   • Additional disk space for models"
+    echo
+    echo "3. ${WHITE}Whisper-only with smart detection${NC} - Local, lighter"
+    echo "   • Intelligent speaker detection without PyAnnote"
+    echo "   • Faster, still effective for most use cases"
+    echo "   • Requires Python dependencies (~100-200MB download)"
+    echo
+    echo "4. ${WHITE}Skip speaker diarization${NC} - Basic transcription only"
+    echo "   • No speaker identification"
+    echo "   • Fastest setup"
+    echo
+    echo "Benefits of speaker diarization:"
+    echo "• Identify multiple speakers in meetings"
+    echo "• Separate conversation by speaker"
+    echo "• Higher accuracy than basic transcription"
+    echo
+    
+    local install_choice=""
+    printf "Choose diarization provider (1-4): "
+    read -r install_choice || install_choice="1"
+    
+    case "$install_choice" in
+        "1")
+            setup_elevenlabs_diarization
+            ;;
+        "2")
+            setup_local_python_deps
+            install_full_diarization_stack
+            ;;
+        "3")
+            setup_local_python_deps
+            install_whisper_only_diarization
+            ;;
+        "4")
+            print_info "Skipping speaker diarization setup"
+            export DIARIZATION_PROVIDER="none"
+            export PYTHON_DIARIZATION_AVAILABLE="false"
+            export PYTHON_DIARIZATION_FULL="false"
+            ;;
+        *)
+            print_info "Invalid choice, defaulting to ElevenLabs"
+            setup_elevenlabs_diarization
+            ;;
+    esac
+}
+
+# Function to setup ElevenLabs diarization
+setup_elevenlabs_diarization() {
+    print_step "Setting up ElevenLabs diarization..."
+    
+    echo -e "${CYAN}ElevenLabs Configuration:${NC}"
+    echo "ElevenLabs Scribe v1 provides the highest quality speaker diarization."
+    echo "You'll need an ElevenLabs API key to use this service."
+    echo
+    echo "Steps to get an ElevenLabs API key:"
+    echo "1. Go to https://elevenlabs.io/sign-up"
+    echo "2. Create a free account"
+    echo "3. Go to https://elevenlabs.io/docs/api-reference/authentication"
+    echo "4. Generate an API key"
+    echo "5. Copy the API key"
+    echo
+    echo "ElevenLabs Features:"
+    echo "• Up to 32 speakers with automatic identification"
+    echo "• 99 languages supported"
+    echo "• Audio event detection (laughter, applause, etc.)"
+    echo "• Word-level timestamps with speaker attribution"
+    echo "• No local dependencies required"
+    echo
+    
+    local elevenlabs_key=""
+    # Check for existing ElevenLabs API key
+    if [[ -f ".env" ]]; then
+        elevenlabs_key=$(grep "ELEVENLABS_API_KEY=" ".env" 2>/dev/null | cut -d'=' -f2- | tr -d '"' || echo "")
+    fi
+    
+    if [[ -n "$elevenlabs_key" ]] && [[ "$elevenlabs_key" != "" ]]; then
+        # Show masked existing key
+        local masked_key="${elevenlabs_key:0:8}...${elevenlabs_key: -4}"
+        printf "Current ElevenLabs API key: %s\n" "$masked_key"
+        printf "Enter new ElevenLabs API key (or press Enter to keep current): "
+        local new_key=""
+        read -r new_key || new_key=""
+        if [[ -n "$new_key" ]]; then
+            elevenlabs_key="$new_key"
+        fi
+    else
+        printf "Enter your ElevenLabs API key (or press Enter to skip): "
+        read -r elevenlabs_key || elevenlabs_key=""
+    fi
+    
+    if [[ -n "$elevenlabs_key" ]]; then
+        export ELEVENLABS_API_KEY="$elevenlabs_key"
+        export DIARIZATION_PROVIDER="elevenlabs"
+        export PYTHON_DIARIZATION_AVAILABLE="false"
+        export PYTHON_DIARIZATION_FULL="false"
+        print_status "ElevenLabs API key configured"
+        
+        # Test the API key
+        print_info "Testing ElevenLabs API key..."
+        if command_exists curl; then
+            local test_response
+            test_response=$(curl -s -H "xi-api-key: $elevenlabs_key" "https://api.elevenlabs.io/v1/user" 2>/dev/null)
+            if echo "$test_response" | grep -q "subscription" || echo "$test_response" | grep -q "user"; then
+                print_status "ElevenLabs API key test passed"
+            else
+                print_warning "ElevenLabs API key test failed"
+                print_info "You can update the key later in the .env file"
+            fi
+        else
+            print_info "Cannot test API key (curl not available)"
+        fi
+    else
+        print_warning "Skipping ElevenLabs API key configuration"
+        print_info "You can add the key later in the .env file as ELEVENLABS_API_KEY"
+        print_info "Falling back to Whisper-only diarization"
+        export ELEVENLABS_API_KEY=""
+        export DIARIZATION_PROVIDER="whisper_pyannote"
+        
+        # Fall back to local Python setup
+        setup_local_python_deps
+        install_whisper_only_diarization
+    fi
+}
+
+# Function to setup local Python dependencies (extracted common code)
+setup_local_python_deps() {
+    print_step "Setting up Python dependencies for local diarization..."
+    
+    # Check if Python 3 is available
+    if ! command_exists python3; then
+        print_error "Python 3 is required for local speaker diarization"
+        case $OS in
+            "macos")
+                print_info "Installing Python 3 via Homebrew..."
+                brew install python3
+                ;;
+            "linux")
+                print_info "Please install Python 3 for your distribution"
+                return 1
+                ;;
+        esac
+    fi
+    
+    # Check if pip is available
+    if ! command_exists pip3 && ! python3 -m pip --version >/dev/null 2>&1; then
+        print_error "pip is required for installing Python dependencies"
+        return 1
+    fi
+    
+    print_status "Python 3 and pip are available"
+}
+
+# Function to install Whisper-only diarization (fallback)
+install_whisper_only_diarization() {
+    print_step "Installing Whisper-only diarization with smart speaker detection..."
+    
+    # Create virtual environment for dependencies (optional but cleaner)
+    local use_venv=""
+    printf "Create a virtual environment for Python dependencies? (recommended) (y/n): "
+    read -r use_venv || use_venv="y"
+    
+    if [[ "$use_venv" =~ ^[Yy]$ ]]; then
+        print_info "Creating virtual environment..."
+        python3 -m venv venv_diarization
+        
+        # Activate virtual environment
+        if [[ -f "venv_diarization/bin/activate" ]]; then
+            source venv_diarization/bin/activate
+            print_status "Virtual environment activated"
+        else
+            print_warning "Failed to create virtual environment, installing globally"
+        fi
+    fi
+    
+    # Install core dependencies - just Whisper
+    print_info "Installing OpenAI Whisper..."
+    if python3 -m pip install openai-whisper torch; then
+        print_status "Whisper installed successfully"
+    else
+        print_error "Failed to install Whisper"
+        return 1
+    fi
+    
+    # Test the installation
+    print_info "Testing Whisper installation..."
+    if python3 -c "import whisper; print('Whisper OK')" 2>/dev/null; then
+        print_status "Whisper test passed"
+        export PYTHON_DIARIZATION_AVAILABLE="true"
+        export PYTHON_DIARIZATION_FULL="false"
+        export DIARIZATION_PROVIDER="whisper_pyannote"
+        print_status "Whisper-only diarization with smart speaker detection installed"
+        print_info "This uses advanced conversation pattern analysis to identify speakers"
+    else
+        print_error "Whisper test failed"
+        return 1
+    fi
+}
+
+# Function to install full diarization stack (with PyAnnote)
+install_full_diarization_stack() {
+    print_step "Installing full diarization stack (Whisper + PyAnnote)..."
+    
+    # Create virtual environment for dependencies (optional but cleaner)
+    local use_venv=""
+    printf "Create a virtual environment for Python dependencies? (recommended) (y/n): "
+    read -r use_venv || use_venv="y"
+    
+    if [[ "$use_venv" =~ ^[Yy]$ ]]; then
+        print_info "Creating virtual environment..."
+        python3 -m venv venv_diarization
+        
+        # Activate virtual environment
+        if [[ -f "venv_diarization/bin/activate" ]]; then
+            source venv_diarization/bin/activate
+            print_status "Virtual environment activated"
+        else
+            print_warning "Failed to create virtual environment, installing globally"
+        fi
+    fi
+    
+    # Install core dependencies
+    print_info "Installing OpenAI Whisper..."
+    if python3 -m pip install openai-whisper torch; then
+        print_status "Whisper installed successfully"
+    else
+        print_error "Failed to install Whisper"
+        return 1
+    fi
+    
+    # Install system dependencies for native compilation on macOS
+    if [[ "$OS" == "macos" ]]; then
+        print_info "Installing system dependencies for native compilation..."
+        
+        # Install required build tools
+        if ! command_exists cmake; then
+            print_info "Installing CMake..."
+            brew install cmake
+        fi
+        
+        if ! command_exists pkg-config; then
+            print_info "Installing pkg-config..."
+            brew install pkg-config
+        fi
+        
+        # Install protobuf (required for sentencepiece)
+        if ! command_exists protoc; then
+            print_info "Installing protobuf..."
+            brew install protobuf
+        fi
+        
+        # Install sentencepiece system library
+        if ! brew list sentencepiece &>/dev/null; then
+            print_info "Installing sentencepiece system library..."
+            brew install sentencepiece
+        fi
+        
+        # Set PKG_CONFIG_PATH for sentencepiece
+        if [[ -d "/opt/homebrew/lib/pkgconfig" ]]; then
+            export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:$PKG_CONFIG_PATH"
+        elif [[ -d "/usr/local/lib/pkgconfig" ]]; then
+            export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH"
+        fi
+    fi
+    
+    # Try to install PyAnnote with improved error handling
+    print_info "Installing PyAnnote.audio (this may take a while)..."
+    print_warning "If this fails, we'll automatically fall back to Whisper-only mode"
+    
+    # First try with system sentencepiece
+    if python3 -m pip install --no-build-isolation pyannote.audio; then
+        print_status "PyAnnote.audio installed successfully"
+        export PYTHON_DIARIZATION_FULL="true"
+    else
+        print_warning "PyAnnote.audio installation failed with system dependencies"
+        print_info "This is common on macOS due to native compilation issues"
+        print_info "Falling back to Whisper-only mode with smart speaker detection"
+        export PYTHON_DIARIZATION_FULL="false"
+    fi
+    
+    # Test the installation
+    print_info "Testing installation..."
+    if python3 -c "import whisper; print('Whisper OK')" 2>/dev/null; then
+        print_status "Whisper test passed"
+    else
+        print_error "Whisper test failed"
+        return 1
+    fi
+    
+    if python3 -c "import pyannote.audio; print('PyAnnote OK')" 2>/dev/null; then
+        print_status "PyAnnote test passed"
+        export PYTHON_DIARIZATION_FULL="true"
+    else
+        print_info "PyAnnote test failed - using Whisper-only mode"
+        export PYTHON_DIARIZATION_FULL="false"
+    fi
+    
+    export PYTHON_DIARIZATION_AVAILABLE="true"
+    export DIARIZATION_PROVIDER="whisper_pyannote"
+    print_status "Python diarization dependencies installed"
+    
+    if [[ "$PYTHON_DIARIZATION_FULL" == "true" ]]; then
+        print_info "Full diarization stack available (Whisper + PyAnnote)"
+    else
+        print_info "Whisper-only diarization with smart speaker detection available"
+        print_info "This still provides excellent speaker identification for most use cases"
+    fi
+}
+
+# Function to configure HuggingFace token
+configure_huggingface_token() {
+    if [[ "$PYTHON_DIARIZATION_FULL" == "true" ]]; then
+        echo -e "${CYAN}HuggingFace Configuration:${NC}"
+        echo "PyAnnote.audio requires a HuggingFace account to download speaker diarization models."
+        echo "This is free and only needed for advanced speaker identification."
+        echo
+        echo "Steps to get a HuggingFace token:"
+        echo "1. Go to https://huggingface.co/join"
+        echo "2. Create a free account"
+        echo "3. Go to https://huggingface.co/settings/tokens"
+        echo "4. Create a new token (read access is sufficient)"
+        echo "5. Copy the token"
+        echo
+        
+        local hf_token=""
+        # Check for existing HuggingFace token
+        if [[ -f ".env" ]]; then
+            hf_token=$(grep "HUGGINGFACE_HUB_TOKEN=" ".env" 2>/dev/null | cut -d'=' -f2- | tr -d '"' || echo "")
+        fi
+        
+        if [[ -n "$hf_token" ]] && [[ "$hf_token" != "" ]]; then
+            # Show masked existing token
+            local masked_token="${hf_token:0:8}...${hf_token: -4}"
+            printf "Current HuggingFace token: %s\n" "$masked_token"
+            printf "Enter new HuggingFace token (or press Enter to keep current): "
+            local new_token=""
+            read -r new_token || new_token=""
+            if [[ -n "$new_token" ]]; then
+                hf_token="$new_token"
+            fi
+        else
+            printf "Enter your HuggingFace token (or press Enter to skip): "
+            read -r hf_token || hf_token=""
+        fi
+        
+        if [[ -n "$hf_token" ]]; then
+            export HUGGINGFACE_HUB_TOKEN="$hf_token"
+            print_status "HuggingFace token configured"
+            
+            # Test the token
+            print_info "Testing HuggingFace token..."
+            if python3 -c "
+import os
+os.environ['HUGGINGFACE_HUB_TOKEN'] = '$hf_token'
+try:
+    from pyannote.audio import Pipeline
+    # Try to access a model (without downloading)
+    model_id = 'pyannote/speaker-diarization-3.1'
+    print('Token test passed')
+except Exception as e:
+    print(f'Token test failed: {e}')
+" 2>/dev/null | grep -q "Token test passed"; then
+                print_status "HuggingFace token test passed"
+            else
+                print_warning "HuggingFace token test failed"
+                print_info "You can update the token later in the .env file"
+            fi
+        else
+            print_warning "Skipping HuggingFace token configuration"
+            print_info "Speaker diarization will use Whisper-only transcription"
+            print_info "You can add the token later in the .env file as HUGGINGFACE_HUB_TOKEN"
+            export HUGGINGFACE_HUB_TOKEN=""
+        fi
+    fi
+}
+
 # Function to create configuration file
 create_config_file() {
     print_step "Creating configuration file..."
@@ -422,23 +1204,32 @@ create_config_file() {
     echo -e "${CYAN}Configuration Setup:${NC}"
     echo
     
-    # Reset terminal state before prompts
-    reset_terminal
-    
     # Get OpenAI API key
     local openai_key=""
     if [[ -f "$config_file" ]]; then
         openai_key=$(grep "OPENAI_API_KEY=" "$config_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"' || echo "")
     fi
     
-    if [[ -z "$openai_key" ]]; then
-        echo -e "${YELLOW}OpenAI API Key Setup:${NC}"
-        echo "You need an OpenAI API key to use the AI features."
-        echo "Get one from: https://platform.openai.com/api-keys"
-        echo
-        safe_read "Enter your OpenAI API key (or press Enter to skip): " openai_key ""
-        echo
+    echo -e "${YELLOW}OpenAI API Key Setup:${NC}"
+    echo "You need an OpenAI API key to use the AI features."
+    echo "Get one from: https://platform.openai.com/api-keys"
+    echo
+    
+    if [[ -n "$openai_key" ]] && [[ "$openai_key" != "your_openai_api_key_here" ]]; then
+        # Show masked existing key
+        local masked_key="${openai_key:0:8}...${openai_key: -4}"
+        printf "Current OpenAI API key: %s\n" "$masked_key"
+        printf "Enter new OpenAI API key (or press Enter to keep current): "
+        local new_key=""
+        read -r new_key || new_key=""
+        if [[ -n "$new_key" ]]; then
+            openai_key="$new_key"
+        fi
+    else
+        printf "Enter your OpenAI API key (or press Enter to skip): "
+        read -r openai_key || openai_key=""
     fi
+    echo
     
     # Get audio device preference with proper validation
     local audio_device=":0"
@@ -456,7 +1247,8 @@ create_config_file() {
     
     echo "Default audio device is ':0' (first available audio device)"
     local user_input=""
-    safe_read "Enter audio device (e.g., ':0', ':1', ':2') or press Enter for default: " user_input ""
+    printf "Enter audio device (e.g., ':0', ':1', ':2') or press Enter for default: "
+    read -r user_input || user_input=""
     
     # Validate and format the audio device
     if [[ -n "$user_input" ]]; then
@@ -503,6 +1295,26 @@ DOUBLE_TAP_WINDOW_MS=500
 DEBOUNCE_MS=50
 MAX_RECORDING_TIME=30000
 
+# Optional - Whisper Settings (for local transcription)
+WHISPER_MODEL=${WHISPER_MODEL:-base.en}
+WHISPER_BACKEND=${WHISPER_BACKEND:-auto}
+WHISPER_LANGUAGE=en
+
+# Optional - Speaker Diarization Settings
+PYTHON_DIARIZATION_AVAILABLE=${PYTHON_DIARIZATION_AVAILABLE:-false}
+PYTHON_DIARIZATION_FULL=${PYTHON_DIARIZATION_FULL:-false}
+HUGGINGFACE_HUB_TOKEN=${HUGGINGFACE_HUB_TOKEN:-}
+
+# Optional - Diarization Plugin Configuration
+DIARIZATION_PROVIDER=${DIARIZATION_PROVIDER:-elevenlabs}
+DIARIZATION_WHISPER_MODEL=base
+DIARIZATION_PYANNOTE_MODEL=pyannote/speaker-diarization-3.1
+DIARIZATION_MAX_SPEAKERS=10
+DIARIZATION_SPEAKER_THRESHOLD=0.7
+
+# Optional - ElevenLabs Configuration (for ElevenLabs diarization)
+ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+
 # Optional - Temporary Directory
 # TEMP_DIR=\$HOME/.meeting-assistant/temp
 EOF
@@ -538,7 +1350,8 @@ setup_plugin_system() {
         echo
         
         local choice=""
-        safe_read "Enter your choice (1-3): " choice "1"
+        printf "Enter your choice (1-3): "
+        read -r choice || choice="1"
         
         case "$choice" in
             "2")
@@ -697,7 +1510,7 @@ verify_system() {
         whisper_backends+=("whisper.cpp")
     fi
     if command_exists whisper; then
-        whisper_backends+=("whisper")
+        whisper_backends+=("openai-whisper")
     fi
     if command_exists faster-whisper; then
         whisper_backends+=("faster-whisper")
@@ -705,8 +1518,47 @@ verify_system() {
     
     if [[ ${#whisper_backends[@]} -gt 0 ]]; then
         print_status "Whisper backends: ${whisper_backends[*]}"
+        
+        # Show selected backend and model if configured
+        if [[ -n "$WHISPER_BACKEND" ]] && [[ "$WHISPER_BACKEND" != "auto" ]]; then
+            print_info "Selected backend: $WHISPER_BACKEND"
+            if [[ -n "$WHISPER_MODEL" ]]; then
+                print_info "Selected model: $WHISPER_MODEL"
+            fi
+        fi
     else
         print_warning "No local Whisper backends found (will use OpenAI API)"
+    fi
+    
+    # Check diarization provider configuration
+    if [[ "$DIARIZATION_PROVIDER" == "elevenlabs" ]]; then
+        if [[ -n "$ELEVENLABS_API_KEY" ]] && [[ "$ELEVENLABS_API_KEY" != "" ]]; then
+            print_status "ElevenLabs diarization: Configured"
+        else
+            print_warning "ElevenLabs diarization: API key not configured"
+        fi
+    elif [[ "$DIARIZATION_PROVIDER" == "whisper_pyannote" ]]; then
+        if [[ "$PYTHON_DIARIZATION_AVAILABLE" == "true" ]]; then
+            if python3 -c "import whisper" 2>/dev/null; then
+                print_status "Python Whisper: Available"
+            else
+                print_warning "Python Whisper: Not available"
+            fi
+            
+            if [[ "$PYTHON_DIARIZATION_FULL" == "true" ]]; then
+                if python3 -c "import pyannote.audio" 2>/dev/null; then
+                    print_status "PyAnnote.audio: Available (full speaker diarization)"
+                else
+                    print_warning "PyAnnote.audio: Not available (Whisper-only mode)"
+                fi
+            else
+                print_info "PyAnnote.audio: Not installed (Whisper-only mode)"
+            fi
+        else
+            print_info "Python diarization: Not installed"
+        fi
+    else
+        print_info "Speaker diarization: Disabled"
     fi
     
     # Check configuration
@@ -715,6 +1567,21 @@ verify_system() {
             print_warning "OpenAI API key not configured in .env"
         else
             print_status "Configuration file found"
+        fi
+        
+        # Check diarization provider configuration
+        if [[ "$DIARIZATION_PROVIDER" == "elevenlabs" ]]; then
+            if grep -q "ELEVENLABS_API_KEY=" ".env" && ! grep -q "ELEVENLABS_API_KEY=$" ".env"; then
+                print_status "ElevenLabs API key configured"
+            else
+                print_warning "ElevenLabs API key not configured"
+            fi
+        elif [[ "$DIARIZATION_PROVIDER" == "whisper_pyannote" ]] && [[ "$PYTHON_DIARIZATION_FULL" == "true" ]]; then
+            if grep -q "HUGGINGFACE_HUB_TOKEN=" ".env" && ! grep -q "HUGGINGFACE_HUB_TOKEN=$" ".env"; then
+                print_status "HuggingFace token configured"
+            else
+                print_warning "HuggingFace token not configured (speaker diarization will use Whisper-only)"
+            fi
         fi
     else
         print_warning "No .env configuration file found"
@@ -755,11 +1622,28 @@ show_usage() {
     echo "   • Check permissions if hotkeys don't work"
     echo "   • Verify audio device with: ffmpeg -f avfoundation -list_devices true -i \"\""
     echo "   • Check logs in ~/.meeting-assistant/logs/"
+    echo "   • If whisper models failed to download:"
+    echo "     - Check internet connection"
+    echo "     - Try manual download from https://huggingface.co/ggerganov/whisper.cpp/tree/main"
+    echo "     - Verify disk space availability"
+    echo "     - Use fallback to OpenAI API if needed"
     echo
     echo "4. ${WHITE}Configuration:${NC}"
     echo "   • Edit .env file to customize settings"
     echo "   • Adjust AUDIO_DEVICE if needed"
     echo "   • Set OPENAI_API_KEY"
+    echo "   • Configure WHISPER_BACKEND and WHISPER_MODEL for local transcription"
+    echo "   • Set ELEVENLABS_API_KEY for ElevenLabs diarization"
+    echo "   • Set HUGGINGFACE_HUB_TOKEN for PyAnnote diarization"
+    echo
+    echo "5. ${WHITE}Speaker Diarization:${NC}"
+    echo "   • Identify multiple speakers in conversations"
+    echo "   • Multiple provider options:"
+    echo "     - ElevenLabs Scribe v1 (cloud-based, highest quality)"
+    echo "     - Whisper + PyAnnote (local, full-featured)"
+    echo "     - Whisper-only (local, lightweight)"
+    echo "   • Requires provider-specific configuration (API keys or Python dependencies)"
+    echo "   • Automatic fallback to basic transcription if not configured"
     echo
 }
 
@@ -820,6 +1704,8 @@ main() {
             install_audio_tools_macos
             install_whisper_backends
             download_whisper_models
+            install_python_diarization_deps
+            configure_huggingface_token
             setup_permissions_macos
             configure_audio_macos
             ;;
@@ -827,6 +1713,8 @@ main() {
             install_rust
             install_ffmpeg
             install_whisper_backends
+            install_python_diarization_deps
+            configure_huggingface_token
             print_info "Linux audio setup varies by distribution"
             ;;
         "windows")
@@ -834,6 +1722,7 @@ main() {
             echo "1. Install Rust: https://rustup.rs/"
             echo "2. Install FFmpeg: https://ffmpeg.org/download.html"
             echo "3. Install Python and pip install openai-whisper"
+            echo "4. Install pyannote.audio for speaker diarization"
             exit 1
             ;;
         *)
@@ -886,6 +1775,9 @@ main() {
     echo "   • Adjust AUDIO_DEVICE if needed"
     echo "   • Set OPENAI_API_KEY"
     echo "   • Choose LLM_PROVIDER (openai, ollama, or custom)"
+    echo "   • Configure WHISPER_BACKEND and WHISPER_MODEL for local transcription"
+    echo "   • Set ELEVENLABS_API_KEY for ElevenLabs diarization"
+    echo "   • Set HUGGINGFACE_HUB_TOKEN for PyAnnote diarization"
     echo
     echo "4. ${WHITE}Plugin System:${NC}"
     echo "   • Switch providers: ./target/release/meeting-assistant plugin set-llm <provider>"
@@ -896,15 +1788,40 @@ main() {
     # Final checklist
     echo -e "${CYAN}📋 Final Checklist:${NC}"
     echo "1. Edit .env file with your OpenAI API key (if using OpenAI)"
-    if [[ "$OS" == "macos" ]]; then
-        echo "2. Grant accessibility permissions to your terminal"
-        echo "3. Configure audio (see instructions above)"
-        echo "4. Start Ollama service if using Ollama: ollama serve"
-        echo "5. Run: ./start.sh"
-    else
-        echo "2. Start Ollama service if using Ollama: ollama serve"
-        echo "3. Run: ./start.sh"
+    
+    local step_counter=2
+    if [[ "$DIARIZATION_PROVIDER" == "elevenlabs" ]]; then
+        echo "$step_counter. Add your ElevenLabs API key to .env for speaker diarization"
+        ((step_counter++))
+    elif [[ "$PYTHON_DIARIZATION_FULL" == "true" ]]; then
+        echo "$step_counter. Add your HuggingFace token to .env for speaker diarization"
+        ((step_counter++))
     fi
+    if [[ "$OS" == "macos" ]]; then
+        echo "$step_counter. Grant accessibility permissions to your terminal"
+        ((step_counter++))
+        echo "$step_counter. Configure audio (see instructions above)"
+        ((step_counter++))
+        echo "$step_counter. Start Ollama service if using Ollama: ollama serve"
+        ((step_counter++))
+        echo "$step_counter. Run: ./start.sh"
+    else
+        echo "$step_counter. Start Ollama service if using Ollama: ollama serve"
+        ((step_counter++))
+        echo "$step_counter. Run: ./start.sh"
+    fi
+    echo
+    echo -e "${CYAN}📋 Common Issues & Solutions:${NC}"
+    echo "• ${WHITE}Model download failed?${NC}"
+    echo "  - Check internet connection and try again"
+    echo "  - Download manually from https://huggingface.co/ggerganov/whisper.cpp/tree/main"
+    echo "  - Use OpenAI API as fallback (set WHISPER_BACKEND=openai in .env)"
+    echo "• ${WHITE}Audio permissions?${NC}"
+    echo "  - Grant microphone access in System Preferences"
+    echo "  - Restart terminal after granting permissions"
+    echo "• ${WHITE}Hotkeys not working?${NC}"
+    echo "  - Grant accessibility permissions in System Preferences"
+    echo "  - Restart terminal application"
     echo
     echo -e "${CYAN}Need help? Check README.md or run './target/release/meeting-assistant --help'${NC}"
 }

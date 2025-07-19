@@ -298,7 +298,7 @@ impl SystemInfo {
         println!("{}", "   • Automatic fallback to OpenAI API if local Whisper fails".white());
         println!("{}", "   • Real-time streaming responses with markdown formatting".white());
         println!("{}", "   • Syntax highlighting for code blocks (JavaScript, Python, Java, SQL, etc.)".white());
-        println!("{}", "   • Multi-language code detection and analysis with interview insights".white());
+        println!("{}", "   • Multi-language code detection and analysis with meeting insights".white());
         println!("{}", "   • Code memory system - reference previously analyzed code in follow-up questions".white());
         println!("{}", "   • Quick cancel - double-tap 'R' to instantly cancel any running request".white());
         println!("{}", "   • Native Rust performance - 10x faster than Node.js version".white());
